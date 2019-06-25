@@ -1,0 +1,64 @@
+/* This file is for your main application css. */
+
+/* This file is for your main application css. */
+
+html {
+    overflow-y: scroll;
+}
+
+body {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+  }
+  
+  main {
+    flex: 1 0 auto;
+  }
+  
+  .title {
+      font-size:56px;font-family:'Exo 2';
+  }
+  .sub-title {
+      font-size: 32px;
+  }
+  
+  .info_message {
+      color:gray;
+      font-size: 22px;
+      font-weight:400;
+      padding: 15px;
+      border-radius:10px;
+      background-color:#e0f2f1;
+  }
+  .error_message {
+      color:gray;
+      font-size: 22px;
+      font-weight:400;
+      padding:15px;
+      border-radius:10px;
+      background-color:#ffcdd2;
+  }
+  
+  .sidebar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100px;
+      height: 100%;
+      border-right: 2px solid #3bc492;
+      background: lightgray;
+      z-index: 10;
+  }
+  .menu-title {
+  /*margin-top:20px;*/
+      width:115px;
+      height:80px;
+      margin-top:0;
+      margin-bottom:20px;
+      font-size:52px;
+      font-weight:300;color:gray;
+      -moz-transform:rotate(-90deg);
+      -webkit-transform:rotate(-90deg);
+  }
+

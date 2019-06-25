@@ -1,0 +1,59 @@
+<%= render "navbar.html", conn: @conn %>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <h3><span style="border-bottom:2px solid lightblue;">Register</span></h3>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <div class="login-form">
+            <div class="col s10">
+                <%= if get_flash(@conn, :info) do %>
+                    <p class="info_message"><%= get_flash(@conn, :info) %></p>
+                <% end %>
+                <%= if get_flash(@conn, :error) do %>
+                    <p class="error_message"><%= get_flash(@conn, :error) %></p>
+                <% end %>
+            </div>
+            <div class="col s12" style="padding-top:25px;">
+                <%= form_for @changeset, Routes.register_path(@conn, :create), fn f -> %>
+                    <div class="row">
+                        <div class="input-field col s8">
+                            <i class="material-icons prefix">account_circle</i>
+                            <%= text_input f, :username, autofocus: true %>
+                            <%= label f, :username, "Username", class: "active" %>
+                        </div>
+                    </div>
+                     <div class="row">
+                        <div class="input-field col s8">
+                            <i class="material-icons prefix">account_circle</i>
+                            <%= text_input f, :email %>
+                            <%= label f, :email, "Email", class: "active" %>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="input-field col s8">
+                            <i class="material-icons prefix">vpn_key</i>
+                            <%= password_input f, :password %>
+                            <%= label f, :password, "Password", class: "active" %>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col s6">
+                            <%= submit "Register", class: "btn-large waves-effect waves-light login-button" %>
+                        </div>
+                    </div>
+                <% end %>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <h5>To login to this service - click <a href="/top5" ><span style="border-bottom: 2px solid lightblue;">here</span></h5>
+    </div>
+</div>

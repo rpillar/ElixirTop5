@@ -1,0 +1,50 @@
+<style>
+    nav ul li:hover {
+        background-color: #004d40;
+    }
+</style>
+
+<ul id="dropdown1" class="dropdown-content">
+  <li><%= link "Active", to: Routes.task_path(@conn, :index) %></li>
+  <li><a href="#!">Backlog</a></li>
+  <li><a href="#!">Completed</a></li>
+</ul>
+
+<ul id="dropdown2" class="dropdown-content">
+  <li><a href="#!">Settings</a></li>
+  <li><a href="#!">Account</a></li>
+</ul>
+
+<div class="navbar-fixed ">
+    <nav style="background-color: #222222;">
+        <div class="nav-wrapper">
+            <a href="#!" class="brand-logo" style="margin-left:50px;font-family:Raleway;font-size:32px;color:#3bc492;"><span style="font-weight:700;">Top-5</span> - <span style="font-weight:500:">Take back Control</a>
+            <%# if @login = "tasks" do %>
+            <ul class="right hide-on-med-and-down" style="margin-right:50px;">
+                <li>
+                    <%= link to: "", style: "font-size:20px;color:#3bc492", class: "dropdown-trigger", data: [target: "dropdown1"] do %>
+                        <i class="material-icons left" style="margin-right:5px;">arrow_drop_down</i>
+                        <span style="font-family:Raleway;border-bottom:2px solid #3bc492;">Tasks</span>
+                    <% end %>
+                </li>
+                <li>
+                    <%= link to: Routes.task_path(@conn, :show_create_task), style: "font-size:20px;color:#3bc492" do %>
+                        <span style="font-family:Raleway;border-bottom:2px solid #3bc492;">Create Task</span>
+                    <% end %>
+                </li>
+                <li>
+                    <%= link to: Routes.task_path(@conn, :logout), style: "font-size:20px;color:#3bc492" do %>
+                        <span style="font-family:Raleway;border-bottom:2px solid #3bc492;">Logout</span>
+                    <% end %>
+                </li>
+                <li>
+                    <%= link to: "", style: "font-size:20px;color:#3bc492", class: "dropdown-trigger", data: [target: "dropdown2"] do %>
+                        <i class="material-icons left" style="margin-right:5px;">more_vert</i>
+                        <span></span>
+                    <% end %>
+                </li>
+            </ul>
+            <%# end %>
+        </div>
+    </nav>
+</div>

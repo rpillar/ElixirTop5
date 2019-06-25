@@ -1,0 +1,219 @@
+<style>
+.task-row {
+    /*padding: 10px 5px 5px 5px;
+    margin-bottom:15px;*/
+}
+#add-task-message {
+    font-size:24px;
+    font-weight: 400;
+}
+.collapsible-body {
+    padding-top: 1rem;
+}
+span.badge.new {
+    font-size: 1rem;
+}
+span.badge {
+    padding: 2px 10px;
+    height:32px;
+    border: 2px solid #82b1ff;
+}
+.task-note {
+    font-size:18px;
+    font-weight: 300;
+}
+
+</style>
+
+<%= render "navbar.html", conn: @conn %>
+
+
+<div class="row">
+    <%= csrf_meta_tag() %>
+    <div class="col s8" style="margin-left:30px;">
+        <div>
+            <h3><span style="border-bottom: 4px solid lightblue;">Task List</span></h3>
+        </div>
+        <div class="col s10">
+            <%= if get_flash(@conn, :info) do %>
+                <p class="info_message"><%= get_flash(@conn, :info) %></p>
+            <% end %>
+            <%= if get_flash(@conn, :error) do %>
+                <p class="error_message"><%= get_flash(@conn, :error) %></p>
+            <% end %>
+        </div>
+
+        <%= if Enum.count(@tasks) > 0 do %>
+            <div class="task-row">
+                <div class="row" style="margin-bottom:5px;border-right:1px solid lightgray;padding-right:10px;">
+                    <div class="col s12">
+                        <ul class="collapsible popout">
+                            <%= for task <- @tasks do %>
+                                <li style="margin-bottom:20px;" data-task-id="<%= task.id %>">
+                                    <% date_today = Date.to_string(Date.utc_today()) %>
+                                    <% deadline = Date.to_string(task.deadline) %>
+                                    <%= if deadline > date_today do %>
+                                      <div class="collapsible-header">
+                                    <% else %>
+                                      <div class="collapsible-header" style="background-color:#ffcdd2;">
+                                    <% end %>
+                                        <div class="col s1"><i class="material-icons" style="color:blue;">info_outline</i></div>
+                                        <div class="col s4"><span style="font-size:18px;font-weight:500;">Task: </span><span style="font-size:18px;font-weight:400;"><%= task.taskname %></span></div>
+                                        <div class="col s3"><span style="font-size:18px;font-weight:500;">Deadline: </span><span style="font-size:18px;font-weight:400;"><%= task.deadline %></span></div>
+                                        <div class="col s2"><span style="font-size:18px;font-weight:500;">Priority: </span><span style="font-size:18px;font-weight:400;"><%= task.priority %></span></div>
+                                        <div class="col s2"><span style="font-size:18px;font-weight:500;">Status: </span><span style="font-size:18px;font-weight:400;"><%= task.status %></span></div>
+                                    </div>
+                                    <div class="collapsible-body">
+                                        <div>
+                                            <h5>
+                                                <span id="task-notes-count-<%= task.id %>" class="new badge notes-display-link" data-id="<%= task.id %>" data-badge-caption="Notes" data-note-count="<%= Enum.count(task.notes) %>"><%= Enum.count(task.notes) %></span>
+                                                <span style="border-bottom:2px solid lightblue;">Task Description</span>
+                                            </h5>
+                                        </div>
+                                        <div style="font-size:18px;font-weight:400;margin-top:10px;margin-bottom:20px;"><%= task.task_description %></div>
+                                        <div style="margin-bottom:25px;">
+                                            <%= link to: Routes.task_path(@conn, :show_edit_task, task.id), class: "btn-floating btn-medium waves-effect waves-light teal" do %>
+                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Edit Task">edit</i>
+                                            <% end %>
+                                            <span class="btn-floating btn-medium waves-effect waves-light teal add-note scale-transition" data-id="<%= task.id %>" >
+                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Add Note">add</i>
+                                            </span>
+                                            <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
+                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Backlog">call_made</i>
+                                            <% end %>   
+                                            <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
+                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Completed">done</i>
+                                            <% end %> 
+                                        </div>
+                                        <div class="row note-add-block note-collector<%= task.id %>" style="display:none;">
+                                            <div>
+                                                <hr />
+                                                <div class="input-field col s12">
+                                                    <i class="material-icons prefix">business</i>
+                                                    <textarea id="task-note<%= task.id %>" class="materialize-textarea task-note-textarea"></textarea>
+                                                    <label for="task-note<%= task.id %>" class="active">Task Note</label>
+                                                </div>
+                                                <div class="col s12">
+                                                    <span class="btn btn-medium waves-effect waves-light teal save-note disabled" data-id="<%= task.id %>">Save</span>
+                                                    <span class="btn btn-medium waves-effect waves-light teal close-note" data-id="<%= task.id %>" style="margin-left:10px;">Close</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </li>
+                            <% end %>    
+                        <ul>                            
+                    </div>
+                </div>
+            </div>
+        <% else %>
+            <div class="row">
+                <div class="col s11">
+                    <p style="font-size:22px;">No active tasks have been defined.</p>
+                </div>
+            </div>
+        <% end %>
+
+    </div>
+
+    <div class="col s3">
+        <div style="margin-top:60px;margin-left:10px;">
+            <div>
+                <h4><span style="border-bottom:2px solid lightblue;">Notes</span></h4>
+            </div>
+            <div>
+                <p>Open a Task to view its Notes</p>
+            </div>
+            <%= if Enum.count(@tasks) > 0 do %>
+                <%= for task <- @tasks do %>
+                    <div id="task-note-<%= task.id %>" class="task-note-list" style="display:none;">
+                        <%= for note <- task.notes do %>
+                            <hr style="border-top: 1px solid #90caf9;"/>
+                            <p class="task-note"><%= note.note %></p>
+                        <% end %>
+                    </div>
+                <% end %>
+            <% end %>
+        </div>
+    </div>
+</div>
+
+<script>
+    $( document ).ready(function() {
+        $('select').formSelect();
+        $('.collapsible').collapsible({
+            onCloseEnd: function() { 
+                $('.note-add-block').hide(400); 
+                $('.task-note-list').hide() 
+            },
+            onOpenEnd: function(el) { 
+                var popoutTaskId = $(el).data('task-id');
+                $('.task-note-list').hide();
+
+                $('#task-note-' + popoutTaskId).show();
+                console.log(popoutTaskId);
+            }
+        });
+        $('.tooltipped').tooltip();
+        $(".dropdown-trigger").dropdown();
+    });
+</script>
+
+<script>
+    $('.save-note').on('click', function(e) {
+        e.preventDefault;
+
+        var taskId = $(this).data('id');
+        var note   = $('#task-note' + taskId).val();
+
+        $.ajax({
+            method: "POST",
+            url: '/api/notes',
+            data: {note: note, task_id: taskId},
+            success: function() {
+                var noteData = "<hr /><p class='task-note' value=''>" + note + "</p>";
+                $('#task-note-' + taskId).append(noteData);
+
+                var noteCount        = $("#task-notes-count-" + taskId).data('note-count');
+                var updatedNoteCount = noteCount + 1;
+                $('#task-notes-count-' + taskId).text(updatedNoteCount);
+                $('#task-notes-count-' + taskId).data('note-count', updatedNoteCount);
+
+                $('#task-note' + taskId).val('');
+                $('.save-note').addClass('disabled');
+                $('.note-add-block').hide(500);
+            },
+            error: function() {
+                console.log('I have failed an add to notes');
+            }
+        });
+
+    });
+    $('.close-note').on('click', function(e) {
+        e.preventDefault;
+
+        var taskId = $(this).data('id');
+        $('#task-note' + taskId).val('');
+        $('.save-note').addClass('disabled');
+        
+        $('.note-add-block').hide(500);
+    });
+</script>
+
+<script>
+    $('.task-note-textarea').on('keyup', function() {
+        if ( $(this).val() == '' ) {
+            $('.save-note').addClass('disabled');
+        }
+        else {
+            $('.save-note').removeClass('disabled');
+        }
+    });
+    $('.add-note').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $(this).data('id');
+        $('.note-collector' + taskId).toggle(500);
+    });
+</script>
+
+

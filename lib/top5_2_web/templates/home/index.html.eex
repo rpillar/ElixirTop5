@@ -1,0 +1,53 @@
+
+<%= render "navbar.html", conn: @conn %>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <h3><span style="border-bottom:2px solid lightblue;">Login</span></h3>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <div class="login-form">
+            <div class="col s10 message">
+                <%= if get_flash(@conn, :error) do %>
+                    <p class="error_message"><%= get_flash(@conn, :error) %></p>
+                <% else %>
+                    <%= if get_flash(@conn, :info) do %>
+                            <p class="info_message"><%= get_flash(@conn, :info) %></p>
+                    <% end %>
+                <% end %>
+            </div>
+            <div class="col s12"style="margin-top:20px;">
+                <%= form_for @conn, Routes.home_path(@conn, :sign_in), [as: :session], fn f -> %>
+                    <div class="row">
+                        <div class="input-field col s8">
+                            <i class="material-icons prefix">account_circle</i>
+                            <%= text_input f, :username, autofocus: true %>
+                            <%= label f, :username, "Username", class: "active" %>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="input-field col s8">
+                            <i class="material-icons prefix">vpn_key</i>
+                            <%= password_input f, :password %>
+                            <%= label f, :password, "Password", class: "active" %>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col s6">
+                            <%= submit "Login", class: "btn-large waves-effect waves-light login-button" %>
+                        </div>
+                    </div>
+                <% end %>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col s8 offset-s1">
+        <h5>To register for this service - click <a href="/top5/register" ><span style="border-bottom: 2px solid lightblue;">here</span></h5>
+    </div>
+</div>

@@ -1,0 +1,13 @@
+<style>
+    nav ul li:hover {
+        background-color: #004d40;
+    }
+</style>
+
+<div class="navbar-fixed ">
+    <nav style="background-color: #222222;">
+        <div class="nav-wrapper">
+            <a href="#!" class="brand-logo" style="margin-left:50px;font-family:Raleway;font-size:32px;color:#3bc492;"><span style="font-weight:700;">Top-5</span> - <span style="font-weight:500:">Take back Control</a>
+        </div>
+    </nav>
+</div>

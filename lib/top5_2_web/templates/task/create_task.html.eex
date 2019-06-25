@@ -1,0 +1,71 @@
+<%= render "navbar.html", conn: @conn %>
+
+<div class="row">
+    <div class="col s10 offset-s1">
+        <div>
+            <h3><span style="border-bottom:2px solid lightblue;">Add Task</span></h3>
+        </div>
+        <div class="col s10">
+            <%= if get_flash(@conn, :info) do %>
+                <p class="info_message"><%= get_flash(@conn, :info) %></p>
+            <% end %>
+            <%= if get_flash(@conn, :error) do %>
+                <p class="error_message"><%= get_flash(@conn, :error) %></p>
+            <% end %>
+        </div>
+        <div>
+        <%= form_for @changeset, Routes.task_path(@conn, :create_task), fn f -> %>
+            <div class="row">
+                <div class="input-field col s5">
+                    <i class="material-icons prefix">account_circle</i>
+                    <%= text_input f, :taskname, id: "task-name", autofocus: true %>
+                    <%= label f, :taskname, "Task Name", class: "active" %>
+                </div>
+            </div>
+            <div class="row">
+                <div class="input-field col s8">
+                    <i class="material-icons prefix">business</i>
+                    <%= textarea f, :task_description, [id: "task-description", class: "materialize-textarea"] %>
+                    <%= label f, :description, "Task Description", class: "active" %>
+                </div>
+            </div>
+            <div class="row">
+                <div class="input-field col s4">
+                    <i class="material-icons prefix">sort</i>
+                    <%= select f, :priority, ["High": "High", "Medium": "Medium", "Low": "Low"], id: "task-priority" %>
+                    <%= label f, :priority, "Task Priority", class: "active" %>
+                </div>
+                <div class="col s1"></div>
+                <div class="input-field col s4">
+                    <i class="material-icons prefix">sort</i>
+                    <%= if @task_count < 5 do %>
+                        <%= select f, :status, ["Active": "Active", "Backlog": "Backlog", "Completed": "Completed"], id: "task-status" %>
+                    <% else %>
+                        <%= select f, :status, ["Backlog": "Backlog", "Completed": "Completed"], id: "task-status" %>
+                    <% end %>
+                    <%= label f, :status, "Task Status", class: "active" %>
+                </div>
+            </div>
+            <div class="row">
+                <div class="input-field col s4">
+                    <i class="material-icons prefix">sort</i>
+                    <%= text_input f, :deadline, [id: "deadline", class: "datepicker"] %>
+                    <%= label f, :deadline, "Task Deadline", class: "active", for: "deadline" %>
+                </div>
+            </div>
+            <div class="row" style="margin-top:20px;">
+                <%= submit "Save", class: "btn-large waves-effect waves-light teal" %>
+            </div>
+        <% end %>
+        </div>
+    </div>
+</div>
+
+<script>
+    $( document ).ready(function() {
+        $('select').formSelect();
+        $('.datepicker').datepicker({ format: 'yyyy-mm-dd' });
+        $('.tooltipped').tooltip();
+        $(".dropdown-trigger").dropdown();
+    });
+</script>
