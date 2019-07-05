@@ -58,10 +58,10 @@ span.badge {
                                       <div class="collapsible-header" style="background-color:#ffcdd2;">
                                     <% end %>
                                         <div class="col s1"><i class="material-icons" style="color:blue;">info_outline</i></div>
-                                        <div class="col s4"><span style="font-size:18px;font-weight:500;">Task: </span><span style="font-size:18px;font-weight:400;"><%= task.taskname %></span></div>
+                                        <div class="col s3"><span style="font-size:18px;font-weight:500;">Task: </span><span style="font-size:18px;font-weight:400;"><%= task.taskname %></span></div>
                                         <div class="col s3"><span style="font-size:18px;font-weight:500;">Deadline: </span><span style="font-size:18px;font-weight:400;"><%= task.deadline %></span></div>
                                         <div class="col s2"><span style="font-size:18px;font-weight:500;">Priority: </span><span style="font-size:18px;font-weight:400;"><%= task.priority %></span></div>
-                                        <div class="col s2"><span style="font-size:18px;font-weight:500;">Status: </span><span style="font-size:18px;font-weight:400;"><%= task.status %></span></div>
+                                        <div class="col s3"><span style="font-size:18px;font-weight:500;">Status: </span><span style="font-size:18px;font-weight:400;"><%= task.status %></span></div>
                                     </div>
                                     <div class="collapsible-body">
                                         <div>
@@ -72,17 +72,21 @@ span.badge {
                                         </div>
                                         <div style="font-size:18px;font-weight:400;margin-top:10px;margin-bottom:20px;"><%= task.task_description %></div>
                                         <div style="margin-bottom:25px;">
-                                            <%= link to: Routes.task_path(@conn, :show_edit_task, task.id), class: "btn-floating btn-medium waves-effect waves-light teal" do %>
-                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Edit Task">edit</i>
-                                            <% end %>
-                                            <span class="btn-floating btn-medium waves-effect waves-light teal add-note scale-transition" data-id="<%= task.id %>" >
-                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Add Note">add</i>
-                                            </span>
-                                            <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
-                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Backlog">call_made</i>
-                                            <% end %>   
-                                            <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
-                                                <i class="material-icons tooltipped" data-position="" data-tooltip="Completed">done</i>
+                                            <%= if @page == "Active" || @page == "Backlog" do %>
+                                              <%= link to: Routes.task_path(@conn, :show_edit_task, task.id), class: "btn-floating btn-medium waves-effect waves-light teal" do %>
+                                                  <i class="material-icons tooltipped" data-position="" data-tooltip="Edit Task">edit</i>
+                                              <% end %>
+                                              <span class="btn-floating btn-medium waves-effect waves-light teal add-note scale-transition" data-id="<%= task.id %>" >
+                                                  <i class="material-icons tooltipped" data-position="" data-tooltip="Add Note">add</i>
+                                              </span>
+                                            <% end %>  
+                                            <%= if @page == "Active" do %>
+                                              <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
+                                                  <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Backlog">call_made</i>
+                                              <% end %>   
+                                              <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red", style: "margin-left:5px;" do %>
+                                                  <i class="material-icons tooltipped" data-position="" data-tooltip="Completed">done</i>
+                                              <% end %>
                                             <% end %> 
                                         </div>
                                         <div class="row note-add-block note-collector<%= task.id %>" style="display:none;">
@@ -109,7 +113,15 @@ span.badge {
         <% else %>
             <div class="row">
                 <div class="col s11">
+                  <%= if @page == "Active" do %>
                     <p style="font-size:22px;">No active tasks have been defined.</p>
+                  <% end %>
+                  <%= if @page == "Backlog" do %>
+                    <p style="font-size:22px;">There are no tasks currently in the Backlog.</p>
+                  <% end %>
+                  <%= if @page == "Active" do %>
+                    <p style="font-size:22px;">There are no completed tasks.</p>
+                  <% end %>
                 </div>
             </div>
         <% end %>

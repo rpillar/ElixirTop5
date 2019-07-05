@@ -27,10 +27,12 @@ defmodule Top52Web.Router do
     get     "/register",        RegisterController, :index
     post    "/register",        RegisterController, :create
     get     "/tasks",           TaskController,     :index
+    get     "/tasks/backlog",   TaskController,     :show_backlog_tasks
+    get     "/tasks/completed", TaskController,     :show_completed_tasks
     get     "/tasks/logout",    TaskController,     :logout
     get     "/tasks/create",    TaskController,     :show_create_task
     get     "/tasks/edit/:id",  TaskController,     :show_edit_task
-    post    "/tasks/edit/:id",  TaskController,     :update_task
+    put     "/tasks/edit/:id",  TaskController,     :update_task
     post    "/tasks",           TaskController,     :create_task
   end
 

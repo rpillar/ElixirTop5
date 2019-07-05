@@ -1,7 +1,7 @@
 <%= render "navbar.html", conn: @conn %>
 
-<div class="row">
-    <div class="col s10 offset-s1">
+<div class="row" style="margin-bottom: 0px;">
+    <div class="col s8 offset-s1">
         <div>
             <h3><span style="border-bottom:2px solid lightblue;">Add Task</span></h3>
         </div>
@@ -13,23 +13,41 @@
                 <p class="error_message"><%= get_flash(@conn, :error) %></p>
             <% end %>
         </div>
-        <div>
+    </div>
+</div>
+
+<div class="col s12">
+    <div>
         <%= form_for @changeset, Routes.task_path(@conn, :create_task), fn f -> %>
             <div class="row">
+                <div class="col s1">
+                    <button type="submit" class="btn-floating btn-large waves-effect waves-light" style="float:right;margin-right:20px;">
+                        <i class="material-icons tooltipped" data-position="right" data-tooltip="Save">save</i>
+                    </button>
+                </div>
                 <div class="input-field col s5">
                     <i class="material-icons prefix">account_circle</i>
                     <%= text_input f, :taskname, id: "task-name", autofocus: true %>
                     <%= label f, :taskname, "Task Name", class: "active" %>
                 </div>
+                <div class="col s6"></div>
             </div>
             <div class="row">
+                <div class="col s1">
+                    <a class="btn-floating btn-large waves-effect waves-light red modal-trigger" style="float:right;margin-right:20px;" href="#modal-delete-task">
+                        <i class="material-icons tooltipped" data-position="right" data-tooltip="Cancel">arrow_back</i>
+                    </a> 
+                </div>
                 <div class="input-field col s8">
                     <i class="material-icons prefix">business</i>
                     <%= textarea f, :task_description, [id: "task-description", class: "materialize-textarea"] %>
                     <%= label f, :description, "Task Description", class: "active" %>
                 </div>
+                <div class="col s3"></div>
             </div>
+
             <div class="row">
+                <div class="col s1"></div>
                 <div class="input-field col s4">
                     <i class="material-icons prefix">sort</i>
                     <%= select f, :priority, ["High": "High", "Medium": "Medium", "Low": "Low"], id: "task-priority" %>
@@ -47,17 +65,15 @@
                 </div>
             </div>
             <div class="row">
+                <div class="col s1"></div>
                 <div class="input-field col s4">
                     <i class="material-icons prefix">sort</i>
                     <%= text_input f, :deadline, [id: "deadline", class: "datepicker"] %>
                     <%= label f, :deadline, "Task Deadline", class: "active", for: "deadline" %>
                 </div>
-            </div>
-            <div class="row" style="margin-top:20px;">
-                <%= submit "Save", class: "btn-large waves-effect waves-light teal" %>
+                <div class="col s7"></div>
             </div>
         <% end %>
-        </div>
     </div>
 </div>
 

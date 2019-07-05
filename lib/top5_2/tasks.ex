@@ -37,7 +37,7 @@ defmodule Top52.Tasks do
   Gets a list of backlog tasks for a particular user
   """
   def list_backlog_tasks_by_user(user_id) do
-    query = Query.from(t in Task, where: t.user_id == ^user_id, preload: [:notes])
+    query = Query.from(t in Task, where: t.user_id == ^user_id and t.status == "Backlog", preload: [:notes])
     case Repo.all(query) do
       nil -> nil
       tasks -> tasks
@@ -48,7 +48,7 @@ defmodule Top52.Tasks do
   Gets a list of completed tasks for a particular user
   """
   def list_completed_tasks_by_user(user_id) do
-    query = Query.from(t in Task, where: t.user_id == ^user_id, preload: [:notes])
+    query = Query.from(t in Task, where: t.user_id == ^user_id and t.status == "Completed", preload: [:notes])
     case Repo.all(query) do
       nil -> nil
       tasks -> tasks

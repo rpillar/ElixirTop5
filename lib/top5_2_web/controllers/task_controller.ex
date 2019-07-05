@@ -38,13 +38,35 @@ defmodule Top52Web.TaskController do
 
       conn
       |> put_flash(:info, "Your Top 5 Tasks.")
-      |> render("index.html", tasks: tasks, changeset: changeset)
+      |> render("index.html", tasks: tasks, changeset: changeset, page: "Active")
     end
 
     def logout(conn, _params) do
         conn
         |> delete_session(:current_user_id)
         |> redirect(to: Helpers.home_path(conn, :index))
+    end
+
+    def show_backlog_tasks(conn, params) do
+      user_id = get_session(conn, :current_user_id)
+
+      changeset  = Task.changeset(%Task{}, params)
+      tasks      = Tasks.list_backlog_tasks_by_user(user_id)
+
+      conn
+      |> put_flash(:info, "Your Backlog Tasks.")
+      |> render("index.html", tasks: tasks, changeset: changeset, page: "Backlog")
+    end
+
+    def show_completed_tasks(conn, params) do
+      user_id = get_session(conn, :current_user_id)
+
+      changeset  = Task.changeset(%Task{}, params)
+      tasks      = Tasks.list_completed_tasks_by_user(user_id)
+
+      conn
+      |> put_flash(:info, "Your Completed Tasks.")
+      |> render("index.html", tasks: tasks, changeset: changeset, page: "Completed")
     end
 
     def show_create_task(conn, params) do
@@ -57,7 +79,6 @@ defmodule Top52Web.TaskController do
     end
 
     def show_edit_task(conn, %{"id" => id}) do
-        user_id   = get_session(conn, :current_user_id)
         task      = Tasks.get_task!(id)
         changeset = Task.changeset(task, %{})
 
@@ -66,8 +87,20 @@ defmodule Top52Web.TaskController do
         |> render("edit_task_details.html", task: task, changeset: changeset)
     end
 
-    def update_task(conn, params) do
-      conn
+    def update_task(conn, %{"id" => id, "task" => task_params}) do
+      task = Tasks.get_task!(id)
+    
+      case Tasks.update_task(task, task_params) do
+        {:ok, _task} ->
+          user_id = get_session(conn, :current_user_id)
+          tasks   = Tasks.list_active_tasks_by_user(user_id)
+
+          conn
+          |> put_flash(:info, "Your Top5 Tasks.")
+          |> render("index.html", tasks: tasks)
+        {:error, _} ->
+          IO.puts "Update of task failed"
+      end
     end
 
     defp check_auth(conn, _params) do

@@ -6,8 +6,8 @@
 
 <ul id="dropdown1" class="dropdown-content">
   <li><%= link "Active", to: Routes.task_path(@conn, :index) %></li>
-  <li><a href="#!">Backlog</a></li>
-  <li><a href="#!">Completed</a></li>
+  <li><%= link "Backlog", to: Routes.task_path(@conn, :show_backlog_tasks) %></li>
+  <li><%= link "Completed", to: Routes.task_path(@conn, :show_completed_tasks) %></li>
 </ul>
 
 <ul id="dropdown2" class="dropdown-content">
