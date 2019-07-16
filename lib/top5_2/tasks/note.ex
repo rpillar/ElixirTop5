@@ -9,6 +9,7 @@ defmodule Top52.Tasks.Note do
 
   schema "notes" do
     field :note, :string
+    field :action, :boolean
     belongs_to :task, Top52.Tasks.Task
 
     timestamps()
@@ -17,7 +18,7 @@ defmodule Top52.Tasks.Note do
   @doc false
   def changeset(note, attrs) do
     note
-    |> cast(attrs, [:note, :task_id])
-    |> validate_required([:note, :task_id])
+    |> cast(attrs, [:note, :action, :task_id])
+    |> validate_required([:note, :action, :task_id])
   end
 end

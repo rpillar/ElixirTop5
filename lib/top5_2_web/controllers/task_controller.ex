@@ -19,7 +19,7 @@ defmodule Top52Web.TaskController do
 
             conn
             |> put_flash(:info, "Your Top 5 Tasks.")
-            |> render("index.html", tasks: tasks, changeset: changeset)
+            |> render("index.html", tasks: tasks, changeset: changeset, page: "Active")
           {:error, %Ecto.Changeset{} = changeset} ->
             {fld, {msg, _}} = List.first(changeset.errors)
             
@@ -97,10 +97,14 @@ defmodule Top52Web.TaskController do
 
           conn
           |> put_flash(:info, "Your Top5 Tasks.")
-          |> render("index.html", tasks: tasks)
+          |> render("index.html", tasks: tasks, page: "Active")
         {:error, _} ->
           IO.puts "Update of task failed"
       end
+    end
+
+    def update_task_status(conn) do
+      conn
     end
 
     defp check_auth(conn, _params) do

@@ -1,7 +1,5 @@
 <style>
 .task-row {
-    /*padding: 10px 5px 5px 5px;
-    margin-bottom:15px;*/
 }
 #add-task-message {
     font-size:24px;
@@ -23,10 +21,39 @@ span.badge {
     font-weight: 300;
 }
 
+.action-note {
+    background-color:#ffcdd2;
+    padding-left:10px;
+    padding-top:15px;
+    padding-bottom:15px;
+    margin-bottom:5px;
+}
+
+.info-note {
+    background-color:#fff;
+    padding-left:10px;
+    padding-top:15px;
+    padding-bottom:15px;
+}
+
+[type="checkbox"] + span:not(.lever):before,
+[type="checkbox"]:not(.filled-in) + span:not(.lever):after {
+  content: '';
+  position: absolute;
+  top: 30;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  z-index: 0;
+  border: 2px solid #009688;
+  border-radius: 1px;
+  margin-top: 3px;
+  -webkit-transition: .2s;
+  transition: .2s;
+}
 </style>
 
 <%= render "navbar.html", conn: @conn %>
-
 
 <div class="row">
     <%= csrf_meta_tag() %>
@@ -52,13 +79,13 @@ span.badge {
                                 <li style="margin-bottom:20px;" data-task-id="<%= task.id %>">
                                     <% date_today = Date.to_string(Date.utc_today()) %>
                                     <% deadline = Date.to_string(task.deadline) %>
-                                    <%= if deadline > date_today do %>
+                                    <%= if ( deadline >= date_today ) or ( @page == "Completed" ) do %>
                                       <div class="collapsible-header">
                                     <% else %>
                                       <div class="collapsible-header" style="background-color:#ffcdd2;">
                                     <% end %>
-                                        <div class="col s1"><i class="material-icons" style="color:blue;">info_outline</i></div>
-                                        <div class="col s3"><span style="font-size:18px;font-weight:500;">Task: </span><span style="font-size:18px;font-weight:400;"><%= task.taskname %></span></div>
+                                        <div class="col s1" style="width:4%;padding-left:0px;padding-right:0px;margin-right:0px;"><i class="material-icons" style="color:blue;">info_outline</i></div>
+                                        <div class="col s3"style="width:28%;"><span style="font-size:18px;font-weight:500;">Task: </span><span style="font-size:18px;font-weight:400;"><%= task.taskname %></span></div>
                                         <div class="col s3"><span style="font-size:18px;font-weight:500;">Deadline: </span><span style="font-size:18px;font-weight:400;"><%= task.deadline %></span></div>
                                         <div class="col s2"><span style="font-size:18px;font-weight:500;">Priority: </span><span style="font-size:18px;font-weight:400;"><%= task.priority %></span></div>
                                         <div class="col s3"><span style="font-size:18px;font-weight:500;">Status: </span><span style="font-size:18px;font-weight:400;"><%= task.status %></span></div>
@@ -81,9 +108,9 @@ span.badge {
                                               </span>
                                             <% end %>  
                                             <%= if @page == "Active" do %>
-                                              <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red" do %>
+                                              <a href="#", id="task-to-backlog" class="btn-floating btn-medium waves-effect waves-light red" data-id="<%= task.id %>">
                                                   <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Backlog">call_made</i>
-                                              <% end %>   
+                                              </a>   
                                               <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red", style: "margin-left:5px;" do %>
                                                   <i class="material-icons tooltipped" data-position="" data-tooltip="Completed">done</i>
                                               <% end %>
@@ -92,10 +119,18 @@ span.badge {
                                         <div class="row note-add-block note-collector<%= task.id %>" style="display:none;">
                                             <div>
                                                 <hr />
-                                                <div class="input-field col s12">
+                                                <div class="input-field col s10">
                                                     <i class="material-icons prefix">business</i>
                                                     <textarea id="task-note<%= task.id %>" class="materialize-textarea task-note-textarea"></textarea>
                                                     <label for="task-note<%= task.id %>" class="active">Task Note</label>
+                                                </div>
+                                                <div class="col s2" style="padding-top:10px;">
+                                                    <p>
+                                                        <label for="note-action-<%= task.id %>">
+                                                            <input type="checkbox" id="note-action-<%= task.id %>"/>
+                                                            <span style="font-size:20px;font-weight:400;color:#000;"><span style="border-bottom:2px solid lightblue;">Action ?</span></span>
+                                                        </label>
+                                                    </p>
                                                 </div>
                                                 <div class="col s12">
                                                     <span class="btn btn-medium waves-effect waves-light teal save-note disabled" data-id="<%= task.id %>">Save</span>
@@ -119,7 +154,7 @@ span.badge {
                   <%= if @page == "Backlog" do %>
                     <p style="font-size:22px;">There are no tasks currently in the Backlog.</p>
                   <% end %>
-                  <%= if @page == "Active" do %>
+                  <%= if @page == "Completed" do %>
                     <p style="font-size:22px;">There are no completed tasks.</p>
                   <% end %>
                 </div>
@@ -134,14 +169,22 @@ span.badge {
                 <h4><span style="border-bottom:2px solid lightblue;">Notes</span></h4>
             </div>
             <div>
-                <p>Open a Task to view its Notes</p>
+                <p>Open a Task to view its Notes <span style="color:#ffcdd2;">(<span style="border-bottom:2px solid lightblue;">Action items</span>).</span></p>
             </div>
             <%= if Enum.count(@tasks) > 0 do %>
                 <%= for task <- @tasks do %>
                     <div id="task-note-<%= task.id %>" class="task-note-list" style="display:none;">
                         <%= for note <- task.notes do %>
-                            <hr style="border-top: 1px solid #90caf9;"/>
-                            <p class="task-note"><%= note.note %></p>
+                          <hr style="border-top: 1px solid #90caf9;"/>
+                          <%= if note.action == true do %>
+                            <div class="action-note">
+                              <p class="task-note" style="padding:0;margin:0;"><%= note.note %></p>
+                            </div>
+                          <% else %>
+                            <div class="info-note">
+                              <p class="task-note" style="padding:0;margin:0;"><%= note.note %></p>
+                            </div>
+                          <% end %>
                         <% end %>
                     </div>
                 <% end %>
@@ -168,6 +211,7 @@ span.badge {
         });
         $('.tooltipped').tooltip();
         $(".dropdown-trigger").dropdown();
+        $("input[type='checkbox']").prop("checked", false);
     });
 </script>
 
@@ -177,13 +221,23 @@ span.badge {
 
         var taskId = $(this).data('id');
         var note   = $('#task-note' + taskId).val();
+        var action = 0;
+        if ( $('#note-action-' + taskId).is(":checked") ) {
+            action = 1;
+        }
 
         $.ajax({
             method: "POST",
             url: '/api/notes',
-            data: {note: note, task_id: taskId},
+            data: {note: note, action: action, task_id: taskId},
             success: function() {
-                var noteData = "<hr /><p class='task-note' value=''>" + note + "</p>";
+                var noteData;
+                if (action == 1) {
+                    noteData = "<hr /><div class='action-note'><p class='task-note' value=''>" + note + "</p></div>";
+                }
+                else {
+                    noteData = "<hr /><div class='info-note'><p class='task-note' value=''>" + note + "</p></div>";
+                }
                 $('#task-note-' + taskId).append(noteData);
 
                 var noteCount        = $("#task-notes-count-" + taskId).data('note-count');
@@ -194,9 +248,11 @@ span.badge {
                 $('#task-note' + taskId).val('');
                 $('.save-note').addClass('disabled');
                 $('.note-add-block').hide(500);
+                $("input[type='checkbox']").prop("checked", false);
             },
             error: function() {
                 console.log('I have failed an add to notes');
+                $("input[type='checkbox']").prop("checked", false);
             }
         });
 
@@ -224,7 +280,15 @@ span.badge {
     $('.add-note').on('click', function(e) {
         e.preventDefault;
         var taskId = $(this).data('id');
-        $('.note-collector' + taskId).toggle(500);
+        $('.note-collector' + taskId).toggle(300);
+    });
+</script>
+
+<script>
+    $('#task-to-backlog').on('click', function(e) {
+        e.preventDefault;
+
+        var task_id = $(this).data('id');
     });
 </script>
 

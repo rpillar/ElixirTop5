@@ -12,6 +12,7 @@ defmodule Top52Web.NoteController do
   end
 
   def create(conn, note_params) do
+    IO.inspect note_params
     with {:ok, %Note{} = note} <- Tasks.create_note(note_params) do
       conn
       |> put_status(:created)
