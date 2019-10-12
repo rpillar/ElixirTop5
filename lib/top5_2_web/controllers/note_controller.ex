@@ -12,7 +12,6 @@ defmodule Top52Web.NoteController do
   end
 
   def create(conn, note_params) do
-    IO.inspect note_params
     with {:ok, %Note{} = note} <- Tasks.create_note(note_params) do
       conn
       |> put_status(:created)
@@ -33,8 +32,9 @@ defmodule Top52Web.NoteController do
 
   def update(conn, %{"id" => id, "note" => note_params}) do
     note = Tasks.get_note!(id)
-
-    with {:ok, %Note{} = note} <- Tasks.update_note(note, note_params) do
+    note_map = %{note: note_params}
+    
+    with {:ok, %Note{} = note} <- Tasks.update_note(note, note_map) do
       render(conn, "show.json", note: note)
     else
       {:error, %Ecto.Changeset{} } ->

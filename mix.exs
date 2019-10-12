@@ -45,7 +45,8 @@ defmodule Top52.MixProject do
       {:guardian, "~> 1.2"},
       {:pbkdf2_elixir, "~> 0.12.3"},
       {:plug_cowboy, "~> 2.0"},
-      {:credo, "~> 1.0.0", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.0.0", only: [:dev, :test], runtime: false},
+      {:poison, "~> 4.0"}
     ]
   end
 

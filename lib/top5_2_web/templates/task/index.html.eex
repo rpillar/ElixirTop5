@@ -108,12 +108,17 @@ span.badge {
                                               </span>
                                             <% end %>  
                                             <%= if @page == "Active" do %>
-                                              <a href="#", id="task-to-backlog" class="btn-floating btn-medium waves-effect waves-light red" data-id="<%= task.id %>">
+                                              <a href="#task-to-backlog-modal", id="task-to-backlog" class="btn-floating btn-medium waves-effect waves-light red modal-trigger" data-id="<%= task.id %>">
                                                   <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Backlog">call_made</i>
                                               </a>   
-                                              <%= link to: Routes.task_path(@conn, :show_create_task), class: "btn-floating btn-medium waves-effect waves-light red", style: "margin-left:5px;" do %>
+                                              <a href="#task-to-completed-modal", id="task-to-completed" class="btn-floating btn-medium waves-effect waves-light red modal-trigger" data-id="<%= task.id %>">
                                                   <i class="material-icons tooltipped" data-position="" data-tooltip="Completed">done</i>
-                                              <% end %>
+                                              </a>
+                                            <% end %> 
+                                            <%= if @page == "Backlog" do %>
+                                              <a href="#task-to-active-modal", id="task-to-active" class="btn-floating btn-medium waves-effect waves-light red modal-trigger" data-id="<%= task.id %>">
+                                              <i class="material-icons tooltipped" data-position="" data-tooltip="Move to Active">call_missed</i>
+                                                </a>
                                             <% end %> 
                                         </div>
                                         <div class="row note-add-block note-collector<%= task.id %>" style="display:none;">
@@ -193,6 +198,39 @@ span.badge {
     </div>
 </div>
 
+<div id="task-to-active-modal" class="modal">
+    <div class="modal-content">
+        <p style="font-size:22px;">Are you sure you want to move this task to Active ?</p>
+        <input id="active-modal-task-id" type="hidden" value="">
+    </div>
+    <div class="modal-footer">
+        <a href="#!" id="move-task-to-active" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Move to Active</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Cancel</a>
+    </div>
+</div>
+
+<div id="task-to-backlog-modal" class="modal">
+    <div class="modal-content">
+        <p style="font-size:22px;">Are you sure you want to move this task to the Backlog ?</p>
+        <input id="backlog-modal-task-id" type="hidden" value="">
+    </div>
+    <div class="modal-footer">
+        <a href="#!" id="move-task-to-backlog" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Move to Backlog</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Cancel</a>
+    </div>
+</div>
+
+<div id="task-to-completed-modal" class="modal">
+    <div class="modal-content">
+        <p style="font-size:22px;">Are you sure you want to move this task to Completed ?</p>
+        <input id="completed-modal-task-id" type="hidden" value="">
+    </div>
+    <div class="modal-footer">
+        <a href="#!" id="move-task-to-completed" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Move to Completed</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Cancel</a>
+    </div>
+</div>
+
 <script>
     $( document ).ready(function() {
         $('select').formSelect();
@@ -212,6 +250,7 @@ span.badge {
         $('.tooltipped').tooltip();
         $(".dropdown-trigger").dropdown();
         $("input[type='checkbox']").prop("checked", false);
+        $('.modal').modal();
     });
 </script>
 
@@ -226,10 +265,15 @@ span.badge {
             action = 1;
         }
 
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
+
         $.ajax({
             method: "POST",
             url: '/api/notes',
             data: {note: note, action: action, task_id: taskId},
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
             success: function() {
                 var noteData;
                 if (action == 1) {
@@ -285,10 +329,88 @@ span.badge {
 </script>
 
 <script>
+    $('#task-to-active').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $(this).data('id');
+        $('#active-modal-task-id').val(taskId);
+    });
     $('#task-to-backlog').on('click', function(e) {
         e.preventDefault;
+        var taskId = $(this).data('id');
+        $('#backlog-modal-task-id').val(taskId);
+    });
+    $('#task-to-completed').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $(this).data('id');
+        $('#completed-modal-task-id').val(taskId);
+    });
+</script>
+<script>
+    $('#move-task-to-active').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $('#active-modal-task-id').val();
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
 
-        var task_id = $(this).data('id');
+        $.ajax({
+            method: "POST",
+            url: '/top5/tasks/updatestatus/' + taskId + '/Active',
+            data: {task_id: taskId},
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
+            success: function() {
+                console.log('Task - move to Active successful.');
+                window.location.href = "/top5/tasks";
+            },
+            error: function() {
+                console.log('Task - move to Active - failed : ');
+            }
+        });
+
+    });
+    $('#move-task-to-backlog').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $('#backlog-modal-task-id').val();
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
+
+        $.ajax({
+            method: "POST",
+            url: '/top5/tasks/updatestatus/' + taskId + '/Backlog',
+            data: {task_id: taskId},
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
+            success: function() {
+                console.log('Task - move to Backlog successful.');
+                window.location.href = "/top5/tasks";
+            },
+            error: function() {
+                console.log('Task - move to Backlog - failed : ');
+            }
+        });
+
+    });
+    $('#move-task-to-completed').on('click', function(e) {
+        e.preventDefault;
+        var taskId = $('#completed-modal-task-id').val();
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
+
+        $.ajax({
+            method: "POST",
+            url: '/top5/tasks/updatestatus/' + taskId + '/Completed',
+            data: {task_id: taskId},
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
+            success: function() {
+                console.log('Task - move to Completed successful.');
+                window.location.href = "/top5/tasks";
+            },
+            error: function() {
+                console.log('Task - move to Completed - failed : ');
+            }
+        });
+
     });
 </script>
 

@@ -42,7 +42,7 @@ defmodule Top52Web.TaskController do
     end
 
     def logout(conn, _params) do
-        conn
+      conn
         |> delete_session(:current_user_id)
         |> redirect(to: Helpers.home_path(conn, :index))
     end
@@ -103,9 +103,23 @@ defmodule Top52Web.TaskController do
       end
     end
 
-    def update_task_status(conn) do
-      conn
+    def update_task_status(conn, %{"id" => id, "status" => status}) do
+      task      = Tasks.get_task!(id)
+
+      case Tasks.update_task(task, %{"status" => status}) do
+        {:ok, _task} ->
+          user_id = get_session(conn, :current_user_id)
+          tasks   = Tasks.list_active_tasks_by_user(user_id)
+
+          conn
+          |> put_flash(:info, "Your Top5 Tasks.")
+          |> render("index.html", tasks: tasks, page: "Active")
+        {:error, _} ->
+          IO.puts "Update of task failed"
+      end
     end
+
+    # private functions
 
     defp check_auth(conn, _params) do
         if user_id = get_session(conn, :current_user_id) do

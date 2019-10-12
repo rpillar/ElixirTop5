@@ -22,7 +22,7 @@ defmodule Top52.Accounts.User do
     user
     |> cast(attrs, [:username, :email, :password])
     |> validate_required([:username, :email, :password])
-    |> validate_format(:email, ~r/@/, message: "This is my message")
+    |> validate_format(:email, ~r/@/, message: "Invalid email address")
     |> validate_password(:password)
     |> unique_constraint(:username)
     |> update_change(:password, &Pbkdf2.hash_pwd_salt/1)

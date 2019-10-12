@@ -11,6 +11,8 @@ defmodule Top52Web.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug :fetch_session
+    plug :fetch_flash
   end
 
   scope "/api", Top52Web do
@@ -33,6 +35,7 @@ defmodule Top52Web.Router do
     get     "/tasks/create",    TaskController,     :show_create_task
     get     "/tasks/edit/:id",  TaskController,     :show_edit_task
     put     "/tasks/edit/:id",  TaskController,     :update_task
+    post    "/tasks/updatestatus/:id/:status", TaskController, :update_task_status
     post    "/tasks",           TaskController,     :create_task
   end
 

@@ -80,14 +80,21 @@ defmodule Top52.TasksTest do
   describe "notes" do
     alias Top52.Tasks.Note
 
-    @valid_attrs %{note: "some note"}
+    @task %{deadline: ~D[2010-04-17], priority: "some priority", status: "some status", task_description: "some task_description", taskname: "some taskname", in_backlog: false}
+
+    @valid_attrs %{note: "some note", action: false}
     @update_attrs %{note: "some updated note"}
     @invalid_attrs %{note: nil}
 
     def note_fixture(attrs \\ %{}) do
+      {:ok, task} =
+        Enum.into(%{}, @task)
+        |> Tasks.create_task()
+
       {:ok, note} =
         attrs
         |> Enum.into(@valid_attrs)
+        |> Map.put(:task_id, task.id)
         |> Tasks.create_note()
 
       note

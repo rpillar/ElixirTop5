@@ -91,21 +91,37 @@
                     <span id="task-notes-button" class="btn btn-large waves-effect waves-light teal" data-state="hidden" disabled>
                 <% end %>
                     <i id="task-notes-button-icon" class="material-icons left">add_circle_outline</i>
-                    Notes - <%= Enum.count(@task.notes) %>
+                    Notes - <span id="task-notes-count" data-count="<%= note_count %>"><%= note_count %></span>
                 </span>
             </h4>
         </div>
         <div id="task-notes" style="display:none;">
             <%= for note <- @task.notes do %>
-                <div class="col s9" style="border:4px solid lightblue;padding:10px 15px 5px 15px;margin-bottom:10px;">
+                <div class="col s10 task-note-block task-note-id-<%= note.id %>" style="border:4px solid lightblue;padding:10px 15px 5px 15px;margin-bottom:10px;" data-note-id="<%= note.id %>">
                     <input type="text" class="col s10 task-edit-note" style="font-size:18px;border-bottom:none;" value="<%= note.note %>" disabled />
-                    <span class="col s2">
-                        <a href="#"><i class="material-icons right" style="font-size:3rem;color:red;">delete</i></a>
-                        <a href="#"><i class="material-icons right" style="font-size:3rem;color:teal;">mode_edit</i></a>
+                    <span class="col s2 task-edit-icons-1">
+                        <a href="#modal-delete-note" class="modal-trigger delete-note" data-id="<%= note.id %>"><i class="material-icons right delete-note" style="font-size:3rem;color:red;">delete</i></a>
+                        <a href="#"><i class="material-icons right edit-note" style="font-size:3rem;color:teal;">mode_edit</i></a>
+                    </span>
+                    <span class="col s2 task-edit-icons-2" style="display:none;">
+                        <a href="#"><i class="material-icons right cancel-edit-note" style="font-size:3rem;color:red;">cancel</i></a>
+                        <a href="#"><i class="material-icons right save-edit-note" style="font-size:3rem;color:teal;">save</i></a>
                     </span>
                 </div>
             <% end %>
         </div>
+    </div>
+</div>
+
+<div id="modal-delete-note" class="modal">
+    <div class="modal-content">
+        <h4><span style="border-bottom: 2px solid lightblue;">Delete Note</span></h4>
+        <p style="font-size:20px;font-weight:500;">Are you sure that you want to delete this Note ?</p>
+        <input id="delete-note-id" type="hidden" value="">
+    </div>
+    <div class="modal-footer">
+        <a href="#!" id="delete-note" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Delete</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="margin-left:15px;font-size:18px;">Cancel</a>
     </div>
 </div>
 
@@ -115,8 +131,8 @@
         <p style="font-size:20px;font-weight:500;">Are you sure that you want to delete this tasks details ?</p>
     </div>
     <div class="modal-footer">
-        <a href="#!" class="modal-close waves-effect waves-green btn red">Delete</a>
-        <a href="#!" class="modal-close waves-effect waves-green btn" style="margin-left:15px;">Cancel</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="font-size:18px;">Delete</a>
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat" style="margin-left:15px;font-size:18px;">Cancel</a>
     </div>
 </div>
 
@@ -146,6 +162,111 @@
             $('#task-notes').hide(300);
             $("html, body").animate({ scrollTop: 0 }, "fast");
         }
+
+        // reset colors / disabled etc.
+        $('.task-note-block').css('border-color', 'lightblue');
+        $('.task-edit-icons-2').hide();
+        $('.task-edit-icons-1').show();
+        $('.task-edit-note').attr('disabled', 'disabled');
+
         return false;
+    });
+    $('.edit-note').on('click', function(e){
+        e.preventDefault();
+
+        var el = $(this).closest('div');
+
+        // reset colors / disabled etc.
+        $('.task-note-block').css('border-color', 'lightblue');
+        $('.task-edit-note').prop('disabled');
+
+        // set the attributes for _this_
+        $(el).css('border-color', 'blue');
+
+        // set icons for the note being edited
+        var note_icons_1 = $(el).find('.task-edit-icons-1');
+        $(note_icons_1).hide();
+        var note_icons_2 = $(el).find('.task-edit-icons-2');
+        $(note_icons_2).show();
+
+        // remove 'disabled' attribute from the input
+        var note_input = $(el).find("input");
+        $(note_input).removeAttr("disabled");
+    });
+    $('.cancel-edit-note').on('click', function(e) {
+        e.preventDefault();
+
+        // reset colors / disabled etc.
+        $('.task-note-block').css('border-color', 'lightblue');
+        $('.task-edit-note').attr('disabled','disabled');
+        $('.task-edit-icons-2').hide();
+        $('.task-edit-icons-1').show();
+    });
+    $('.delete-note').on('click', function(e) {
+        e.preventDefault();
+
+        var noteId = $(this).data('id');
+        $('#delete-note-id').val(noteId);
+    });
+</script>
+
+<script>
+    $('.save-edit-note').on('click', function(e) {
+        e.preventDefault;
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
+
+        var noteId = $(this).closest('.task-note-block').data('note-id');
+        var note = $(this).closest('.task-note-block').find('.task-edit-note').val();
+
+        $.ajax({
+            method: "PUT",
+            url: '/api/notes/' + noteId,
+            data: {note: note, id: noteId},
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
+            success: function() {
+                // reset colors / disabled etc.
+                $('.task-note-block').css('border-color', 'lightblue');
+                $('.task-edit-note').attr('disabled','disabled');
+                $('.task-edit-icons-2').hide();
+                $('.task-edit-icons-1').show();
+
+                $('#task-notes-button').data('state', 'hidden');
+                $('#task-notes-button-icon').text('add_circle_outline');
+                $('#task-notes').hide(300);
+                $("html, body").animate({ scrollTop: 0 }, "fast");
+            },
+            error: function() {
+                console.log('I have failed an save note');
+            }
+        });
+    });
+</script>
+<script>
+    $('#delete-note').on('click', function(e) {
+        e.preventDefault;
+        var noteId = $('#delete-note-id').val();
+        var CSRF_TOKEN = <%= raw Poison.encode!(Plug.CSRFProtection.get_csrf_token()) %>;
+
+        var noteCount = $('#task-notes-count').data('count');
+        var updatedNoteCount = noteCount - 1;
+
+        $.ajax({
+            method: "DELETE",
+            url: '/api/notes/' + noteId,
+            beforeSend: function(xhr) {
+                xhr.setRequestHeader("X-CSRF-Token", CSRF_TOKEN);
+            },
+            success: function() {
+                $('.task-note-id-' + noteId).remove();
+                $('#task-notes-count').data('count',updatedNoteCount);
+                $('#task-notes-count').text(updatedNoteCount);
+            },
+            error: function() {
+                console.log('Note - delete failed : ');
+            }
+        });
+
     });
 </script>
