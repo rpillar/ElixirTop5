@@ -3,7 +3,6 @@ defmodule Top52Web.NoteControllerTest do
 
   alias Top52.Accounts
   alias Top52.Tasks
-  alias Top52.Tasks.Note
 
   @user %{email: "test@test.com", password: "password123", username: "testing"}
 
@@ -11,9 +10,6 @@ defmodule Top52Web.NoteControllerTest do
 
   @create_attrs %{
     note: "some note", action: false
-  }
-  @update_attrs %{
-    note: "some updated note"
   }
   @invalid_attrs %{note: nil}
 
@@ -48,7 +44,7 @@ defmodule Top52Web.NoteControllerTest do
 
   describe "create note" do
     test "renders note when data is valid", %{conn: conn} do
-      conn = post(conn, Routes.note_path(conn, :create), note: note_fixture())
+      conn = post(conn, Routes.note_path(conn, :create), note_fixture())
       assert %{"id" => id} = json_response(conn, 201)["data"]
 
       conn = get(conn, Routes.note_path(conn, :show, id))
@@ -59,9 +55,8 @@ defmodule Top52Web.NoteControllerTest do
              } = json_response(conn, 200)["data"]
     end
 
-    @tag :skip
     test "renders errors when data is invalid", %{conn: conn} do
-      conn = post(conn, Routes.note_path(conn, :create), note: @invalid_attrs)
+      conn = post(conn, Routes.note_path(conn, :create), @invalid_attrs)
       assert json_response(conn, 422)["errors"] != %{}
     end
   end
@@ -69,10 +64,9 @@ defmodule Top52Web.NoteControllerTest do
   describe "update note" do
     setup [:create_note]
 
-    @tag :skip
-    test "renders note when data is valid", %{conn: conn, note: %Note{id: id} = note} do
-      conn = put(conn, Routes.note_path(conn, :update, note), note: @update_attrs)
-      assert %{"id" => ^id} = json_response(conn, 200)["data"]
+    test "renders note when data is valid", %{conn: conn, note: note} do
+      conn = put(conn, Routes.note_path(conn, :update, note.id), %{id: note.id, note: "some updated note"})
+      assert %{"id" => id} = json_response(conn, 200)["data"]
 
       conn = get(conn, Routes.note_path(conn, :show, id))
 
@@ -104,7 +98,7 @@ defmodule Top52Web.NoteControllerTest do
   end
 
   defp create_note(_) do
-    note = note_fixture(:note)
+    {:ok, note} = Tasks.create_note(note_fixture())
     {:ok, note: note}
   end
 end

@@ -46,7 +46,8 @@ defmodule Top52.MixProject do
       {:pbkdf2_elixir, "~> 0.12.3"},
       {:plug_cowboy, "~> 2.0"},
       {:credo, "~> 1.0.0", only: [:dev, :test], runtime: false},
-      {:poison, "~> 4.0"}
+      {:poison, "~> 4.0"},
+      {:dialyxir, "~> 0.5.1"}
     ]
   end
 

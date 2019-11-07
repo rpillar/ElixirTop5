@@ -87,8 +87,13 @@ defmodule Top52.TasksTest do
     @invalid_attrs %{note: nil}
 
     def note_fixture(attrs \\ %{}) do
+      {:ok, user} = 
+        Enum.into(%{}, @user)
+        |> Accounts.create_user()
+
       {:ok, task} =
         Enum.into(%{}, @task)
+        |> Map.put(:user_id, user.id)
         |> Tasks.create_task()
 
       {:ok, note} =
@@ -111,7 +116,7 @@ defmodule Top52.TasksTest do
     end
 
     test "create_note/1 with valid data creates a note" do
-      assert {:ok, %Note{} = note} = Tasks.create_note(@valid_attrs)
+      note = note_fixture()
       assert note.note == "some note"
     end
 

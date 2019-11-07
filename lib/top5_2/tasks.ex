@@ -8,6 +8,7 @@ defmodule Top52.Tasks do
   alias Top52.Repo
 
   alias Top52.Tasks.Task
+  alias Top52.Tasks.Note
 
   @doc """
   Returns the list of tasks.
@@ -26,7 +27,8 @@ defmodule Top52.Tasks do
   Gets a list of active tasks for a particular user
   """
   def list_active_tasks_by_user(user_id) do
-    query = Query.from(t in Task, where: t.user_id == ^user_id and t.status == "Active", order_by: t.id, preload: [:notes])
+    notes_query = from n in Note, order_by: n.id
+    query = Query.from(t in Task, where: t.user_id == ^user_id and t.status == "Active", order_by: t.deadline, preload: [notes: ^notes_query])
     case Repo.all(query) do
       nil -> nil
       tasks -> tasks
@@ -69,7 +71,23 @@ defmodule Top52.Tasks do
       ** (Ecto.NoResultsError)
 
   """
-  def get_task!(id), do: Repo.get!(Task, id) |> Repo.preload(:notes)
+  def get_task!(id), do: Repo.get!(Task, id)
+
+  @doc """
+  Gets a single task with its notes.
+
+  Raises `Ecto.NoResultsError` if the Task does not exist.
+
+  ## Examples
+
+  iex> get_task!(123)
+  %Task{}
+
+  iex> get_task!(456)
+  ** (Ecto.NoResultsError)
+
+  """
+  def get_task_with_notes!(id), do: Repo.get!(Task, id) |> Repo.preload(:notes)
 
   @doc """
   Creates a task.
