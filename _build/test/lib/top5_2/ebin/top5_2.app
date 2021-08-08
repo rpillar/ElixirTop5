@@ -1,6 +1,6 @@
 {application,top5_2,
              [{applications,[kernel,stdlib,elixir,logger,runtime_tools,
-                             pbkdf2_elixir,gettext,jason,poison,
+                             pbkdf2_elixir,gettext,jason,poison,dialyxir,
                              phoenix_pubsub,postgrex,ecto_sql,phoenix_html,
                              plug_cowboy,phoenix,guardian,phoenix_ecto]},
               {description,"top5_2"},
