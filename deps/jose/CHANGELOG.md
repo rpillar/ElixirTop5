@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.11.2 (2021-08-06)
+
+* Fixes
+  * Add compatability with OTP 24
+
+## 1.11.1 (2020-12-23)
+
+* Fixes
+  * Fix compatibility with older OTP versions
+  * Fix AES detection on OTP 23
+  * Fix AES GCM bugs on OTP 23
+
+## 1.11.0 (2020-11-24)
+
+* Fixes
+  * Add compatability layer to fix deprecated `crypto` functions.
+  * Use `:extra_applications` instead of `:applications` (bumps Elixir requirement to `~> 1.4`).
+  * Conditionally compile `Poison` modules used for testing.
+
+## 1.10.1 (2020-01-08)
+
+* Fixes
+  * Add PEM/DER compatibility layer for PKCS-8 incompatibilities with various versions of OTP, `crypto`, and `public_key`; see [#82](https://github.com/potatosalad/erlang-jose/issues/82)
+
+## 1.10.0 (2020-01-03)
+
+* Enhancements
+  * Remove [base64url](https://github.com/dvv/base64url) dependency and include embedded version.
+  * Add support for `C20P` and `XC20P` encryption based on [draft-amringer-jose-chacha](https://tools.ietf.org/html/draft-amringer-jose-chacha-01) (ChaCha20/Poly1305 and XChaCha20/Poly1305).
+  * Add support for ECDH-ES keywrapping for AES-GCM, ChaCha20/Poly1305, and XChaCha20/Poly1305.
+  * Add support for PBES2 keywrapping for AES-GCM, ChaCha20/Poly1305, and XChaCha20/Poly1305.
+  * Add support for `ECDH-1PU` encryption based on [draft-madden-jose-ecdh-1pu](https://tools.ietf.org/html/draft-madden-jose-ecdh-1pu-02).
+  * Add support for reading/writing DER format (or PKCS8 format).
+
+* Fixes
+  * Fix PSS salt length (thanks to [@ntrepid8](https://github.com/ntrepid8), see [#65](https://github.com/potatosalad/erlang-jose/pull/65))
+  * Speed up and stabilize tests on CI environment.
+
 ## 1.9.0 (2018-12-31)
 
 * Enhancements

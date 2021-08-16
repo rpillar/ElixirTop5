@@ -9,8 +9,10 @@ defmodule Plug.Parsers.MULTIPART do
 
     * `:length` - sets the maximum number of bytes to read from the request,
       defaults to 8_000_000 bytes
+
     * `:read_length` - sets the amount of bytes to read at one time from the
       underlying socket to fill the chunk, defaults to 1_000_000 bytes
+
     * `:read_timeout` - sets the timeout for each socket read, defaults to
       15_000ms
 
@@ -22,41 +24,47 @@ defmodule Plug.Parsers.MULTIPART do
 
     * `:headers` - containing the same `:length`, `:read_length`
       and `:read_timeout` options which are used explicitly for parsing multipart
-      headers.
+      headers
+
     * `:include_unnamed_parts_at` - string specifying a body parameter that can
       hold a lists of body parts that didn't have a 'Content-Disposition' header.
       For instance, `include_unnamed_parts_at: "_parts"` would result in
       a body parameter `"_parts"`, containing a list of parts, each with `:body`
-      and `:headers` fields, like `[%{ body: "{}", headers: [{"content-type", "application/json"}]}]`.
+      and `:headers` fields, like `[%{body: "{}", headers: [{"content-type", "application/json"}]}]`
+
+  * `:validate_utf8` - specifies whether multipart body parts should be validated
+      as utf8 binaries. Defaults to true
+
+  ## Dynamic configuration
+
+  If you need to dynamically configure how `Plug.Parsers.MULTIPART` behave,
+  for example, based on the connection or another system parameter, one option
+  is to create your own parser that wraps it:
+
+      defmodule MyMultipart do
+        @multipart Plug.Parsers.MULTIPART
+
+        def init(opts) do
+          opts
+        end
+
+        def parse(conn, "multipart", subtype, headers, opts) do
+          limit = [limit: System.fetch_env!("UPLOAD_LIMIT")]
+          opts = @multipart.init([limit: limit] ++ opts)
+          @multipart.parse(conn, "multipart", subtype, headers, opts)
+        end
+
+        def parse(conn, _type, _subtype, _headers, _opts) do
+          {:next, conn}
+        end
+      end
+
   """
 
   @behaviour Plug.Parsers
 
+  @impl true
   def init(opts) do
-    opts
-  end
-
-  def parse(conn, "multipart", subtype, _headers, opts) when subtype in ["form-data", "mixed"] do
-    try do
-      parse_multipart(conn, opts)
-    rescue
-      # Do not ignore upload errors
-      e in [Plug.UploadError, Plug.Parsers.BadEncodingError] ->
-        reraise e, System.stacktrace()
-
-      # All others are wrapped
-      e ->
-        reraise Plug.Parsers.ParseError.exception(exception: e), System.stacktrace()
-    end
-  end
-
-  def parse(conn, _type, _subtype, _headers, _opts) do
-    {:next, conn}
-  end
-
-  ## Multipart
-
-  defp parse_multipart(conn, opts) do
     # Remove the length from options as it would attempt
     # to eagerly read the body on the limit value.
     {limit, opts} = Keyword.pop(opts, :length, 8_000_000)
@@ -68,6 +76,45 @@ defmodule Plug.Parsers.MULTIPART do
     # The header options are handled individually.
     {headers_opts, opts} = Keyword.pop(opts, :headers, [])
 
+    with {_, _, _} <- limit do
+      IO.warn(
+        "passing a {module, function, args} tuple to Plug.Parsers.MULTIPART is deprecated. " <>
+          "Please see Plug.Parsers.MULTIPART module docs for better approaches to configuration"
+      )
+    end
+
+    {limit, headers_opts, opts}
+  end
+
+  @impl true
+  def parse(conn, "multipart", subtype, _headers, opts_tuple)
+      when subtype in ["form-data", "mixed"] do
+    try do
+      parse_multipart(conn, opts_tuple)
+    rescue
+      # Do not ignore upload errors
+      e in [Plug.UploadError, Plug.Parsers.BadEncodingError] ->
+        reraise e, __STACKTRACE__
+
+      # All others are wrapped
+      e ->
+        reraise Plug.Parsers.ParseError.exception(exception: e), __STACKTRACE__
+    end
+  end
+
+  def parse(conn, _type, _subtype, _headers, _opts) do
+    {:next, conn}
+  end
+
+  ## Multipart
+
+  defp parse_multipart(conn, {{module, fun, args}, header_opts, opts}) do
+    # TODO: Remove me on 2.0.
+    limit = apply(module, fun, args)
+    parse_multipart(conn, {limit, header_opts, opts})
+  end
+
+  defp parse_multipart(conn, {limit, headers_opts, opts}) do
     read_result = Plug.Conn.read_part_headers(conn, headers_opts)
     {:ok, limit, acc, conn} = parse_multipart(read_result, limit, opts, headers_opts, [])
 
@@ -98,7 +145,10 @@ defmodule Plug.Parsers.MULTIPART do
         {:ok, limit, body, conn} =
           parse_multipart_body(Plug.Conn.read_part_body(conn, opts), limit, opts, "")
 
-        Plug.Conn.Utils.validate_utf8!(body, Plug.Parsers.BadEncodingError, "multipart body")
+        if Keyword.get(opts, :validate_utf8, true) do
+          Plug.Conn.Utils.validate_utf8!(body, Plug.Parsers.BadEncodingError, "multipart body")
+        end
+
         {conn, limit, [{name, body} | acc]}
 
       {:part, name} ->

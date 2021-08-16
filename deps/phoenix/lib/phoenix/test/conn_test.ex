@@ -10,9 +10,9 @@ defmodule Phoenix.ConnTest do
 
   `Phoenix.ConnTest` typically works against endpoints. That's the preferred way
   to test anything that your router dispatches to:
-  
+
       @endpoint MyAppWeb.Endpoint
-      
+
       test "says welcome on the home page" do
         conn = get(build_conn(), "/")
         assert conn.resp_body =~ "Welcome!"
@@ -55,7 +55,7 @@ defmodule Phoenix.ConnTest do
   and pass an atom representing the action to dispatch:
 
       @endpoint MyAppWeb.HomeController
-    
+
       test "says welcome on the home page" do
         conn = get(build_conn(), :index)
         assert conn.resp_body =~ "Welcome!"
@@ -68,12 +68,12 @@ defmodule Phoenix.ConnTest do
 
   Under other circumstances, you may be testing a view or another layer that
   requires a connection for processing. For such cases, a connection can be
-  created using the `conn/3` helper:
+  created using the `build_conn/3` helper:
 
       MyApp.UserView.render("hello.html", conn: build_conn(:get, "/"))
 
   While `build_conn/0` returns a connection with no request information to it,
-  `build_conn/2` returns a connection with the given request information already
+  `build_conn/3` returns a connection with the given request information already
   filled in.
 
   ## Recycling
@@ -112,6 +112,17 @@ defmodule Phoenix.ConnTest do
 
   @doc false
   defmacro __using__(_) do
+    IO.warn """
+    Using Phoenix.ConnTest is deprecated, instead of:
+
+        use Phoenix.ConnTest
+
+    do:
+
+        import Plug.Conn
+        import Phoenix.ConnTest
+    """, Macro.Env.stacktrace(__CALLER__)
+
     quote do
       import Plug.Conn
       import Phoenix.ConnTest
@@ -130,15 +141,6 @@ defmodule Phoenix.ConnTest do
   end
 
   @doc """
-  Deprecated version of `conn/0`. Use `build_conn/0` instead.
-  """
-  @spec conn() :: Conn.t
-  def conn() do
-    IO.warn "using conn/0 to build a connection is deprecated. Use build_conn/0 instead"
-    build_conn()
-  end
-
-  @doc """
   Creates a connection to be used in upcoming requests
   with a preset method, path and body.
 
@@ -150,18 +152,6 @@ defmodule Phoenix.ConnTest do
     Plug.Adapters.Test.Conn.conn(%Conn{}, method, path, params_or_body)
     |> Conn.put_private(:plug_skip_csrf_protection, true)
     |> Conn.put_private(:phoenix_recycled, true)
-  end
-
-  @doc """
-  Deprecated version of `conn/3`. Use `build_conn/3` instead.
-  """
-  @spec conn(atom | binary, binary, binary | list | map | nil) :: Conn.t
-  def conn(method, path, params_or_body \\ nil) do
-    IO.warn """
-    using conn/3 to build a connection is deprecated. Use build_conn/3 instead.
-    #{Exception.format_stacktrace}
-    """
-    build_conn(method, path, params_or_body)
   end
 
   @http_methods [:get, :post, :put, :patch, :delete, :options, :connect, :trace, :head]
@@ -257,6 +247,12 @@ defmodule Phoenix.ConnTest do
   defp from_set_to_sent(conn), do: conn
 
   @doc """
+  Inits a session used exclusively for testing.
+  """
+  @spec init_test_session(Conn.t, map | keyword) :: Conn.t
+  defdelegate init_test_session(conn, session), to: Plug.Test
+
+  @doc """
   Puts a request cookie.
   """
   @spec put_req_cookie(Conn.t, binary, binary) :: Conn.t
@@ -277,13 +273,13 @@ defmodule Phoenix.ConnTest do
   @doc """
   Gets the whole flash storage.
   """
-  @spec get_flash(Conn.t) :: Conn.t
+  @spec get_flash(Conn.t) :: map
   defdelegate get_flash(conn), to: Phoenix.Controller
 
   @doc """
   Gets the given key from the flash storage.
   """
-  @spec get_flash(Conn.t, term) :: Conn.t
+  @spec get_flash(Conn.t, term) :: term
   defdelegate get_flash(conn, key), to: Phoenix.Controller
 
   @doc """
@@ -370,7 +366,7 @@ defmodule Phoenix.ConnTest do
     if given == status do
       body
     else
-      raise "expected response with status #{given}, got: #{status}, with body:\n#{body}"
+      raise "expected response with status #{given}, got: #{status}, with body:\n#{inspect(body)}"
     end
   end
 
@@ -390,7 +386,7 @@ defmodule Phoenix.ConnTest do
   end
 
   @doc """
-  Asserts the given status code, that we have an text response and
+  Asserts the given status code, that we have a text response and
   returns the response body if one was set or sent.
 
   ## Examples
@@ -405,7 +401,7 @@ defmodule Phoenix.ConnTest do
   end
 
   @doc """
-  Asserts the given status code, that we have an json response and
+  Asserts the given status code, that we have a json response and
   returns the decoded JSON response if one was set or sent.
 
   ## Examples
@@ -463,17 +459,22 @@ defmodule Phoenix.ConnTest do
   This emulates behaviour performed by browsers where cookies
   returned in the response are available in following requests.
 
+  By default, only the headers "accept", "accept-language", and
+  "authorization" are recycled. However, a custom set of headers
+  can be specified by passing a list of strings representing its
+  names as the second argument of the function.
+
   Note `recycle/1` is automatically invoked when dispatching
   to the endpoint, unless the connection has already been
   recycled.
   """
-  @spec recycle(Conn.t) :: Conn.t
-  def recycle(conn) do
+  @spec recycle(Conn.t, [String.t]) :: Conn.t
+  def recycle(conn, headers \\ ~w(accept accept-language authorization)) do
     build_conn()
     |> Map.put(:host, conn.host)
     |> Plug.Test.recycle_cookies(conn)
     |> Plug.Test.put_peer_data(Plug.Conn.get_peer_data(conn))
-    |> copy_headers(conn.req_headers, ~w(accept authorization))
+    |> copy_headers(conn.req_headers, headers)
   end
 
   defp copy_headers(conn, headers, copy) do
@@ -496,24 +497,34 @@ defmodule Phoenix.ConnTest do
   end
 
   @doc """
-  Calls the Endpoint and bypasses Router match.
+  Calls the Endpoint and Router pipelines.
 
-  Useful for unit testing Plugs where Endpoint and/or
-  router pipeline plugs are required for proper setup.
+  Useful for unit testing Plugs where Endpoint and/or router pipeline
+  plugs are required for proper setup.
 
   Note the use of `get("/")` following `bypass_through` in the examples below.
   To execute the plug pipelines, you must issue a request against the router.
-  Most often, you can simpy send a GET request against the root path, but you
+  Most often, you can simply send a GET request against the root path, but you
   may also specify a different method or path which your pipelines may operate
-  against. If you ommit the request you may find that your tests return
-  a `flash not fetched, call fetch_flash/2` or similar error.
+  against.
 
   ## Examples
 
-  For example, imagine you are testing an authentication
-  plug in isolation, but you need to invoke the Endpoint plugs
-  and `:browser` pipeline of your Router for session and flash
-  related dependencies:
+  For example, imagine you are testing an authentication plug in
+  isolation, but you need to invoke the Endpoint plugs and router
+  pipelines to set up session and flash related dependencies.
+  One option is to invoke an existing route that uses the proper
+  pipelines. You can do so by passing the connection and the
+  router name to `bypass_through`:
+
+      conn =
+        conn
+        |> bypass_through(MyAppWeb.Router)
+        |> get("/some_url")
+        |> MyApp.RequireAuthentication.call([])
+      assert conn.halted
+
+  You can also specify which pipelines you want to run:
 
       conn =
         conn
@@ -522,22 +533,14 @@ defmodule Phoenix.ConnTest do
         |> MyApp.RequireAuthentication.call([])
       assert conn.halted
 
-  Alternatively, you could invoke only the Endpoint, and Router:
-
-      conn =
-        conn
-        |> bypass_through(MyAppWeb.Router, [])
-        |> get("/")
-        |> MyApp.RequireAuthentication.call([])
-      assert conn.halted
-
-  Or only invoke the Endpoint's plugs:
+  Alternatively, you could only invoke the Endpoint's plugs:
 
       conn =
         conn
         |> bypass_through()
         |> get("/")
         |> MyApp.RequireAuthentication.call([])
+
       assert conn.halted
   """
   @spec bypass_through(Conn.t) :: Conn.t
@@ -546,12 +549,22 @@ defmodule Phoenix.ConnTest do
   end
 
   @doc """
-  Calls the Endpoint and bypasses Router match.
+  Calls the Endpoint and Router pipelines for the current route.
+
+  See `bypass_through/1`.
+  """
+  @spec bypass_through(Conn.t, module) :: Conn.t
+  def bypass_through(conn, router) do
+    Plug.Conn.put_private(conn, :phoenix_bypass, {router, :current})
+  end
+
+  @doc """
+  Calls the Endpoint and the given Router pipelines.
 
   See `bypass_through/1`.
   """
   @spec bypass_through(Conn.t, module, atom | list) :: Conn.t
-  def bypass_through(conn, router, pipelines \\ []) do
+  def bypass_through(conn, router, pipelines) do
     Plug.Conn.put_private(conn, :phoenix_bypass, {router, List.wrap(pipelines)})
   end
 
@@ -570,13 +583,13 @@ defmodule Phoenix.ConnTest do
   def redirected_params(%Plug.Conn{} = conn) do
     router = Phoenix.Controller.router_module(conn)
     %URI{path: path, host: host} = conn |> redirected_to() |> URI.parse()
-    path_info = split_path(path)
 
-    {conn, _pipes, _dispatch} = router.__match_route__(conn, "GET", path_info, host || conn.host)
-    Enum.into(conn.path_params, %{}, fn {key, val} -> {String.to_atom(key), val} end)
-  end
-  defp split_path(path) do
-    for segment <- String.split(path, "/"), segment != "", do: segment
+    case Phoenix.Router.route_info(router, "GET", path, host || conn.host) do
+      :error ->
+        raise Phoenix.Router.NoRouteError, conn: conn, router: router
+      %{path_params: path_params} ->
+        Enum.into(path_params, %{}, fn {key, val} -> {String.to_atom(key), val} end)
+    end
   end
 
   @doc """
@@ -658,7 +671,7 @@ defmodule Phoenix.ConnTest do
     try do
       {:ok, func.()}
     catch
-      kind, error -> {:error, {kind, error, System.stacktrace()}}
+      kind, error -> {:error, {kind, error, __STACKTRACE__}}
     end
   end
 end

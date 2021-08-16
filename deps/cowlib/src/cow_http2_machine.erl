@@ -24,25 +24,40 @@
 -export([prepare_push_promise/4]).
 -export([prepare_trailers/3]).
 -export([send_or_queue_data/4]).
+-export([ensure_window/2]).
+-export([ensure_window/3]).
 -export([update_window/2]).
 -export([update_window/3]).
 -export([reset_stream/2]).
+-export([get_connection_local_buffer_size/1]).
 -export([get_local_setting/2]).
+-export([get_remote_settings/1]).
 -export([get_last_streamid/1]).
+-export([set_last_streamid/1]).
+-export([get_stream_local_buffer_size/2]).
 -export([get_stream_local_state/2]).
 -export([get_stream_remote_state/2]).
+-export([is_lingering_stream/2]).
 
 -type opts() :: #{
+	connection_window_margin_size => 0..16#7fffffff,
+	connection_window_update_threshold => 0..16#7fffffff,
 	enable_connect_protocol => boolean(),
 	initial_connection_window_size => 65535..16#7fffffff,
 	initial_stream_window_size => 0..16#7fffffff,
+	max_connection_window_size => 0..16#7fffffff,
 	max_concurrent_streams => non_neg_integer() | infinity,
 	max_decode_table_size => non_neg_integer(),
 	max_encode_table_size => non_neg_integer(),
 	max_frame_size_received => 16384..16777215,
 	max_frame_size_sent => 16384..16777215 | infinity,
+	max_stream_window_size => 0..16#7fffffff,
+	message_tag => any(),
 	preface_timeout => timeout(),
-	settings_timeout => timeout()
+	settings_timeout => timeout(),
+	stream_window_data_threshold => 0..16#7fffffff,
+	stream_window_margin_size => 0..16#7fffffff,
+	stream_window_update_threshold => 0..16#7fffffff
 }.
 -export_type([opts/0]).
 
@@ -131,10 +146,11 @@
 	%% Stream identifiers.
 	local_streamid :: pos_integer(), %% The next streamid to be used.
 	remote_streamid = 0 :: non_neg_integer(), %% The last streamid received.
+	last_remote_streamid = 16#7fffffff :: non_neg_integer(), %% Used in GOAWAY.
 
 	%% Currently active HTTP/2 streams. Streams may be initiated either
 	%% by the client or by the server through PUSH_PROMISE frames.
-	streams = [] :: [stream()],
+	streams = #{} :: #{cow_http2:streamid() => stream()},
 
 	%% HTTP/2 streams that have recently been reset locally.
 	%% We are expected to keep receiving additional frames after
@@ -182,7 +198,7 @@ init(client, Opts) ->
 	NextSettings = settings_init(Opts),
 	client_preface(#http2_machine{
 		mode=client,
-		opts=only_keep_relevant_opts(Opts),
+		opts=Opts,
 		preface_timer=start_timer(preface_timeout, Opts),
 		settings_timer=start_timer(settings_timeout, Opts),
 		next_settings=NextSettings,
@@ -192,22 +208,20 @@ init(server, Opts) ->
 	NextSettings = settings_init(Opts),
 	common_preface(#http2_machine{
 		mode=server,
-		opts=only_keep_relevant_opts(Opts),
+		opts=Opts,
 		preface_timer=start_timer(preface_timeout, Opts),
 		settings_timer=start_timer(settings_timeout, Opts),
 		next_settings=NextSettings,
 		local_streamid=2
 	}).
 
-%% We remove the options that are part of SETTINGS or that are not known.
-only_keep_relevant_opts(Opts) ->
-	maps:with([
-		initial_connection_window_size,
-		max_encode_table_size,
-		max_frame_size_sent,
-		settings_timeout
-	], Opts).
-
+%% @todo In Cowlib 3.0 we should always include MessageTag in the message.
+%% It can be set to 'undefined' if the option is missing.
+start_timer(Name, Opts=#{message_tag := MessageTag}) ->
+	case maps:get(Name, Opts, 5000) of
+		infinity -> undefined;
+		Timeout -> erlang:start_timer(Timeout, self(), {?MODULE, MessageTag, Name})
+	end;
 start_timer(Name, Opts) ->
 	case maps:get(Name, Opts, 5000) of
 		infinity -> undefined;
@@ -297,11 +311,11 @@ frame(Frame, State=#http2_machine{state=settings, preface_timer=TRef}) ->
 	end,
 	settings_frame(Frame, State#http2_machine{state=normal, preface_timer=undefined});
 frame(Frame, State=#http2_machine{state={continuation, _, _}}) ->
-	continuation_frame(Frame, State);
+	maybe_discard_result(continuation_frame(Frame, State));
 frame(settings_ack, State=#http2_machine{state=normal}) ->
 	settings_ack_frame(State);
 frame(Frame, State=#http2_machine{state=normal}) ->
-	case element(1, Frame) of
+	Result = case element(1, Frame) of
 		data -> data_frame(Frame, State);
 		headers -> headers_frame(Frame, State);
 		priority -> priority_frame(Frame, State);
@@ -314,7 +328,26 @@ frame(Frame, State=#http2_machine{state=normal}) ->
 		window_update -> window_update_frame(Frame, State);
 		continuation -> unexpected_continuation_frame(Frame, State);
 		_ -> ignored_frame(State)
-	end.
+	end,
+	maybe_discard_result(Result).
+
+%% RFC7540 6.9. After sending a GOAWAY frame, the sender can discard frames for
+%% streams initiated by the receiver with identifiers higher than the identified
+%% last stream. However, any frames that alter connection state cannot be
+%% completely ignored. For instance, HEADERS, PUSH_PROMISE, and CONTINUATION
+%% frames MUST be minimally processed to ensure the state maintained for header
+%% compression is consistent.
+maybe_discard_result(FrameResult={ok, Result, State=#http2_machine{mode=Mode,
+		last_remote_streamid=MaxID}})
+		when element(1, Result) =/= goaway ->
+	case element(2, Result) of
+		StreamID when StreamID > MaxID, not ?IS_LOCAL(Mode, StreamID) ->
+			{ok, State};
+		_StreamID ->
+			FrameResult
+	end;
+maybe_discard_result(FrameResult) ->
+	FrameResult.
 
 %% DATA frame.
 
@@ -348,12 +381,11 @@ data_frame(Frame={data, StreamID, _, Data}, State0=#http2_machine{
 				'DATA frame received for a half-closed (remote) stream. (RFC7540 5.1)');
 		undefined ->
 			%% After we send an RST_STREAM frame and terminate a stream,
-			%% the remote endpoint still might be sending us some more frames
-			%% until it can process this RST_STREAM. We therefore ignore
-			%% DATA frames received for such lingering streams.
+			%% the remote endpoint might still be sending us some more
+			%% frames until it can process this RST_STREAM.
 			case lists:member(StreamID, Lingering) of
 				true ->
-					{ok, State0};
+					{ok, State};
 				false ->
 					{error, {connection_error, stream_closed,
 						'DATA frame received for a closed stream. (RFC7540 5.1)'},
@@ -517,7 +549,7 @@ headers_enforce_concurrency_limit(Frame=#headers{id=StreamID},
 	MaxConcurrentStreams = maps:get(max_concurrent_streams, LocalSettings, infinity),
 	%% Using < is correct because this new stream is not included
 	%% in the Streams variable yet and so we'll end up with +1 stream.
-	case length(Streams) < MaxConcurrentStreams of
+	case map_size(Streams) < MaxConcurrentStreams of
 		true ->
 			headers_pseudo_headers(Frame, State, Type, Stream, Headers);
 		false ->
@@ -647,6 +679,8 @@ headers_regular_headers(Frame=#headers{id=StreamID},
 			stream_reset(StreamID, State, protocol_error, HumanReadable)
 	end.
 
+regular_headers([{<<>>, _}|_], _) ->
+	{error, 'Empty header names are not valid regular headers. (CVE-2019-9516)'};
 regular_headers([{<<":", _/bits>>, _}|_], _) ->
 	{error, 'Pseudo-headers were found after regular headers. (RFC7540 8.1.2.1)'};
 regular_headers([{<<"connection">>, _}|_], _) ->
@@ -799,7 +833,7 @@ rst_stream_frame({rst_stream, StreamID, _}, State=#http2_machine{mode=Mode,
 		State};
 rst_stream_frame({rst_stream, StreamID, Reason}, State=#http2_machine{
 		streams=Streams0, remote_lingering_streams=Lingering0}) ->
-	Streams = lists:keydelete(StreamID, #stream.id, Streams0),
+	Streams = maps:remove(StreamID, Streams0),
 	%% We only keep up to 10 streams in this state. @todo Make it configurable?
 	Lingering = [StreamID|lists:sublist(Lingering0, 10 - 1)],
 	{ok, {rst_stream, StreamID, Reason},
@@ -826,18 +860,22 @@ settings_frame({settings, Settings}, State0=#http2_machine{
 		_ -> {ok, State2}
 	end;
 %% We expect to receive a SETTINGS frame as part of the preface.
-settings_frame(_F, State) ->
+settings_frame(_F, State=#http2_machine{mode=server}) ->
 	{error, {connection_error, protocol_error,
 		'The preface sequence must be followed by a SETTINGS frame. (RFC7540 3.5)'},
+		State};
+settings_frame(_F, State) ->
+	{error, {connection_error, protocol_error,
+		'The preface must begin with a SETTINGS frame. (RFC7540 3.5)'},
 		State}.
 
 %% When SETTINGS_INITIAL_WINDOW_SIZE changes we need to update
 %% the local stream windows for all active streams and perhaps
 %% resume sending data.
 streams_update_local_window(State=#http2_machine{streams=Streams0}, Increment) ->
-	Streams = [
+	Streams = maps:map(fun(_, S=#stream{local_window=StreamWindow}) ->
 		S#stream{local_window=StreamWindow + Increment}
-	|| S=#stream{local_window=StreamWindow} <- Streams0],
+	end, Streams0),
 	State#http2_machine{streams=Streams}.
 
 %% Ack for a previously sent SETTINGS frame.
@@ -865,9 +903,9 @@ settings_ack_frame(State0=#http2_machine{settings_timer=TRef,
 %% When we receive an ack to a SETTINGS frame we sent we need to update
 %% the remote stream windows for all active streams.
 streams_update_remote_window(State=#http2_machine{streams=Streams0}, Increment) ->
-	Streams = [
+	Streams = maps:map(fun(_, S=#stream{remote_window=StreamWindow}) ->
 		S#stream{remote_window=StreamWindow + Increment}
-	|| S=#stream{remote_window=StreamWindow} <- Streams0],
+	end, Streams0),
 	State#http2_machine{streams=Streams}.
 
 %% PUSH_PROMISE frame.
@@ -1076,7 +1114,6 @@ timeout(_, _, State) ->
 -spec prepare_headers(cow_http2:streamid(), State, idle | cow_http2:fin(),
 	pseudo_headers(), cow_http:headers())
 	-> {ok, cow_http2:fin(), iodata(), State} when State::http2_machine().
-%% @todo Should handle the request case too.
 prepare_headers(StreamID, State=#http2_machine{encode_state=EncodeState0},
 		IsFin0, PseudoHeaders, Headers0) ->
 	Stream = #stream{method=Method, local=idle} = stream_get(StreamID, State),
@@ -1085,7 +1122,7 @@ prepare_headers(StreamID, State=#http2_machine{encode_state=EncodeState0},
 		{_, <<"HEAD">>} -> fin;
 		_ -> IsFin0
 	end,
-	Headers = merge_pseudo_headers(PseudoHeaders, Headers0),
+	Headers = merge_pseudo_headers(PseudoHeaders, remove_http11_headers(Headers0)),
 	{HeaderBlock, EncodeState} = cow_hpack:encode(Headers, EncodeState0),
 	{ok, IsFin, HeaderBlock, stream_store(Stream#stream{local=IsFin0},
 		State#http2_machine{encode_state=EncodeState})}.
@@ -1104,13 +1141,33 @@ prepare_push_promise(StreamID, State=#http2_machine{encode_state=EncodeState0,
 		{_, TE0} -> TE0;
 		false -> undefined
 	end,
-	Headers = merge_pseudo_headers(PseudoHeaders, Headers0),
+	Headers = merge_pseudo_headers(PseudoHeaders, remove_http11_headers(Headers0)),
 	{HeaderBlock, EncodeState} = cow_hpack:encode(Headers, EncodeState0),
 	{ok, LocalStreamID, HeaderBlock, stream_store(
 		#stream{id=LocalStreamID, method=maps:get(method, PseudoHeaders),
 			remote=fin, remote_expected_size=0,
 			local_window=LocalWindow, remote_window=RemoteWindow, te=TE},
 		State#http2_machine{encode_state=EncodeState, local_streamid=LocalStreamID + 2})}.
+
+remove_http11_headers(Headers) ->
+	RemoveHeaders0 = [
+		<<"keep-alive">>,
+		<<"proxy-connection">>,
+		<<"transfer-encoding">>,
+		<<"upgrade">>
+	],
+	RemoveHeaders = case lists:keyfind(<<"connection">>, 1, Headers) of
+		false ->
+			RemoveHeaders0;
+		{_, ConnHd} ->
+			%% We do not need to worry about any "close" header because
+			%% that header name is reserved.
+			Connection = cow_http_hd:parse_connection(ConnHd),
+			Connection ++ [<<"connection">>|RemoveHeaders0]
+	end,
+	lists:filter(fun({Name, _}) ->
+		not lists:member(Name, RemoveHeaders)
+	end, Headers).
 
 merge_pseudo_headers(PseudoHeaders, Headers0) ->
 	lists:foldl(fun
@@ -1133,9 +1190,15 @@ prepare_trailers(StreamID, State=#http2_machine{encode_state=EncodeState0}, Trai
 	| {send, [{cow_http2:streamid(), cow_http2:fin(), [DataOrFileOrTrailers]}], State}
 	when State::http2_machine(), DataOrFileOrTrailers::
 		{data, iodata()} | #sendfile{} | {trailers, cow_http:headers()}.
-send_or_queue_data(StreamID, State0, IsFin0, DataOrFileOrTrailers0) ->
+send_or_queue_data(StreamID, State0=#http2_machine{opts=Opts, local_window=ConnWindow},
+		IsFin0, DataOrFileOrTrailers0) ->
 	%% @todo Probably just ignore if the method was HEAD.
-	Stream0 = #stream{local=nofin, te=TE0} = stream_get(StreamID, State0),
+	Stream0 = #stream{
+		local=nofin,
+		local_window=StreamWindow,
+		local_buffer_size=BufferSize,
+		te=TE0
+	} = stream_get(StreamID, State0),
 	DataOrFileOrTrailers = case DataOrFileOrTrailers0 of
 		{trailers, _} ->
 			%% We only accept TE headers containing exactly "trailers" (RFC7540 8.1.2.1).
@@ -1155,11 +1218,26 @@ send_or_queue_data(StreamID, State0, IsFin0, DataOrFileOrTrailers0) ->
 		_ ->
 			DataOrFileOrTrailers0
 	end,
-	case send_or_queue_data(Stream0, State0, [], IsFin0, DataOrFileOrTrailers, in) of
-		{ok, Stream, State, []} ->
-			{ok, stream_store(Stream, State)};
-		{ok, Stream=#stream{local=IsFin}, State, SendData} ->
-			{send, [{StreamID, IsFin, lists:reverse(SendData)}], stream_store(Stream, State)}
+	SendSize = case DataOrFileOrTrailers of
+		{data, D} -> BufferSize + iolist_size(D);
+		#sendfile{bytes=B} -> BufferSize + B;
+		{trailers, _} -> 0
+	end,
+	MinSendSize = maps:get(stream_window_data_threshold, Opts, 16384),
+	if
+		%% If we cannot send the data all at once and the window
+		%% is smaller than we are willing to send at a minimum,
+		%% we queue the data directly.
+		(StreamWindow < MinSendSize)
+				andalso ((StreamWindow < SendSize) orelse (ConnWindow < SendSize)) ->
+			{ok, stream_store(queue_data(Stream0, IsFin0, DataOrFileOrTrailers, in), State0)};
+		true ->
+			case send_or_queue_data(Stream0, State0, [], IsFin0, DataOrFileOrTrailers, in) of
+				{ok, Stream, State, []} ->
+					{ok, stream_store(Stream, State)};
+				{ok, Stream=#stream{local=IsFin}, State, SendData} ->
+					{send, [{StreamID, IsFin, lists:reverse(SendData)}], stream_store(Stream, State)}
+			end
 	end.
 
 %% Internal data sending/queuing functions.
@@ -1169,31 +1247,33 @@ send_or_queue_data(StreamID, State0, IsFin0, DataOrFileOrTrailers0) ->
 %% all streams and send what we can until either everything is
 %% sent or we run out of space in the window.
 send_data(State0=#http2_machine{streams=Streams0}) ->
-	case send_data_for_all_streams(Streams0, State0, [], []) of
+	Iterator = maps:iterator(Streams0),
+	case send_data_for_all_streams(maps:next(Iterator), Streams0, State0, []) of
 		{ok, Streams, State, []} ->
 			{ok, State#http2_machine{streams=Streams}};
 		{ok, Streams, State, Send} ->
 			{send, Send, State#http2_machine{streams=Streams}}
 	end.
 
-send_data_for_all_streams([], State, Acc, Send) ->
-	{ok, lists:reverse(Acc), State, Send};
+send_data_for_all_streams(none, Streams, State, Send) ->
+	{ok, Streams, State, Send};
 %% While technically we should never get < 0 here, let's be on the safe side.
-send_data_for_all_streams(Tail, State=#http2_machine{local_window=ConnWindow}, Acc, Send)
+send_data_for_all_streams(_, Streams, State=#http2_machine{local_window=ConnWindow}, Send)
 		when ConnWindow =< 0 ->
-	{ok, lists:reverse(Acc, Tail), State, Send};
+	{ok, Streams, State, Send};
 %% We rely on send_data_for_one_stream/3 to do all the necessary checks about the stream.
-send_data_for_all_streams([Stream0|Tail], State0, Acc, Send) ->
+send_data_for_all_streams({StreamID, Stream0, Iterator}, Streams, State0, Send) ->
 	case send_data_for_one_stream(Stream0, State0, []) of
 		{ok, Stream, State, []} ->
-			send_data_for_all_streams(Tail, State, [Stream|Acc], Send);
+			send_data_for_all_streams(maps:next(Iterator),
+				Streams#{StreamID => Stream}, State, Send);
 		%% We need to remove the stream here because we do not use stream_store/2.
-		{ok, #stream{id=StreamID, local=fin, remote=fin}, State, SendData} ->
-			send_data_for_all_streams(Tail, State, Acc,
-				[{StreamID, fin, SendData}|Send]);
-		{ok, Stream=#stream{id=StreamID, local=IsFin}, State, SendData} ->
-			send_data_for_all_streams(Tail, State, [Stream|Acc],
-				[{StreamID, IsFin, SendData}|Send])
+		{ok, #stream{local=fin, remote=fin}, State, SendData} ->
+			send_data_for_all_streams(maps:next(Iterator),
+				maps:remove(StreamID, Streams), State, [{StreamID, fin, SendData}|Send]);
+		{ok, Stream=#stream{local=IsFin}, State, SendData} ->
+			send_data_for_all_streams(maps:next(Iterator),
+				Streams#{StreamID => Stream}, State, [{StreamID, IsFin, SendData}|Send])
 	end.
 
 send_data(Stream0, State0) ->
@@ -1207,18 +1287,42 @@ send_data(Stream0, State0) ->
 send_data_for_one_stream(Stream=#stream{local=nofin, local_buffer_size=0,
 		local_trailers=Trailers}, State, SendAcc) when Trailers =/= undefined ->
 	{ok, Stream, State, lists:reverse([{trailers, Trailers}|SendAcc])};
+send_data_for_one_stream(Stream=#stream{local=nofin, local_buffer=Q0, local_buffer_size=0},
+		State, SendAcc) ->
+	case queue:len(Q0) of
+		0 ->
+			{ok, Stream, State, lists:reverse(SendAcc)};
+		1 ->
+			%% We know there is a final empty data frame in the queue.
+			%% We need to mark the stream as complete.
+			{{value, {fin, 0, _}}, Q} = queue:out(Q0),
+			{ok, Stream#stream{local=fin, local_buffer=Q}, State, lists:reverse(SendAcc)}
+	end;
 send_data_for_one_stream(Stream=#stream{local=IsFin, local_window=StreamWindow,
 		local_buffer_size=BufferSize}, State=#http2_machine{local_window=ConnWindow}, SendAcc)
 		when ConnWindow =< 0; IsFin =:= fin; StreamWindow =< 0; BufferSize =:= 0 ->
 	{ok, Stream, State, lists:reverse(SendAcc)};
-send_data_for_one_stream(Stream0=#stream{local_buffer=Q0, local_buffer_size=BufferSize},
-		State0, SendAcc0) ->
-	%% We know there is an item in the queue.
-	{{value, {IsFin, DataSize, Data}}, Q} = queue:out(Q0),
-	Stream1 = Stream0#stream{local_buffer=Q, local_buffer_size=BufferSize - DataSize},
-	{ok, Stream, State, SendAcc}
-		= send_or_queue_data(Stream1, State0, SendAcc0, IsFin, Data, in_r),
-	send_data_for_one_stream(Stream, State, SendAcc).
+send_data_for_one_stream(Stream0=#stream{local_window=StreamWindow,
+		local_buffer=Q0, local_buffer_size=BufferSize},
+		State0=#http2_machine{opts=Opts, local_window=ConnWindow}, SendAcc0) ->
+	MinSendSize = maps:get(stream_window_data_threshold, Opts, 16384),
+	if
+		%% If we cannot send the entire buffer at once and the window
+		%% is smaller than we are willing to send at a minimum, do nothing.
+		%%
+		%% We only do this check the first time we go through this function;
+		%% we want to send as much data as possible IF we send some.
+		(SendAcc0 =:= []) andalso (StreamWindow < MinSendSize)
+				andalso ((StreamWindow < BufferSize) orelse (ConnWindow < BufferSize)) ->
+			{ok, Stream0, State0, []};
+		true ->
+			%% We know there is an item in the queue.
+			{{value, {IsFin, DataSize, Data}}, Q} = queue:out(Q0),
+			Stream1 = Stream0#stream{local_buffer=Q, local_buffer_size=BufferSize - DataSize},
+			{ok, Stream, State, SendAcc}
+				= send_or_queue_data(Stream1, State0, SendAcc0, IsFin, Data, in_r),
+			send_data_for_one_stream(Stream, State, SendAcc)
+	end.
 
 %% We can send trailers immediately if the queue is empty, otherwise we queue.
 %% We always send trailer frames even if the window is empty.
@@ -1272,10 +1376,107 @@ queue_data(Stream=#stream{local_buffer=Q0, local_buffer_size=Size0}, IsFin, Data
 		{sendfile, _, Bytes, _} -> Bytes;
 		{data, Iolist} -> iolist_size(Iolist)
 	end,
-	Q = queue:In({IsFin, DataSize, Data}, Q0),
-	Stream#stream{local_buffer=Q, local_buffer_size=Size0 + DataSize}.
+	%% Never queue non-final empty data frames.
+	case {DataSize, IsFin} of
+		{0, nofin} ->
+			Stream;
+		_ ->
+			Q = queue:In({IsFin, DataSize, Data}, Q0),
+			Stream#stream{local_buffer=Q, local_buffer_size=Size0 + DataSize}
+	end.
 
 %% Public interface to update the flow control window.
+%%
+%% The ensure_window function applies heuristics to avoid updating the
+%% window when it is not necessary. The update_window function updates
+%% the window unconditionally.
+%%
+%% The ensure_window function should be called when requesting more
+%% data (for example when reading a request or response body) as well
+%% as when receiving new data. Failure to do so may result in the
+%% window being depleted.
+%%
+%% The heuristics dictating whether the window must be updated and
+%% what the window size is depends on three options (margin, max
+%% and threshold) along with the Size argument. The window increment
+%% returned by this function may therefore be smaller than the Size
+%% argument. On the other hand the total window allocated over many
+%% calls may end up being larger than the initial Size argument. As
+%% a result, it is the responsibility of the caller to ensure that
+%% the Size argument is never lower than 0.
+
+-spec ensure_window(non_neg_integer(), State)
+	-> ok | {ok, pos_integer(), State} when State::http2_machine().
+ensure_window(Size, State=#http2_machine{opts=Opts, remote_window=RemoteWindow}) ->
+	case ensure_window(Size, RemoteWindow, connection, Opts) of
+		ok ->
+			ok;
+		{ok, Increment} ->
+			{ok, Increment, State#http2_machine{remote_window=RemoteWindow + Increment}}
+	end.
+
+-spec ensure_window(cow_http2:streamid(), non_neg_integer(), State)
+	-> ok | {ok, pos_integer(), State} when State::http2_machine().
+ensure_window(StreamID, Size, State=#http2_machine{opts=Opts}) ->
+	case stream_get(StreamID, State) of
+		%% For simplicity's sake, we do not consider attempts to ensure the window
+		%% of a terminated stream to be errors. We simply act as if the stream
+		%% window is large enough.
+		undefined ->
+			ok;
+		Stream = #stream{remote_window=RemoteWindow} ->
+			case ensure_window(Size, RemoteWindow, stream, Opts) of
+				ok ->
+					ok;
+				{ok, Increment} ->
+					{ok, Increment, stream_store(Stream#stream{remote_window=RemoteWindow + Increment}, State)}
+			end
+	end.
+
+%% No need to update the window when we are not expecting data.
+ensure_window(0, _, _, _) ->
+	ok;
+%% No need to update the window when it is already high enough.
+ensure_window(Size, Window, _, _) when Size =< Window ->
+	ok;
+ensure_window(Size0, Window, Type, Opts) ->
+	Threshold = ensure_window_threshold(Type, Opts),
+	if
+		%% We do not update the window when it is higher than the threshold.
+		Window > Threshold ->
+			ok;
+		true ->
+			Margin = ensure_window_margin(Type, Opts),
+			Size = Size0 + Margin,
+			MaxWindow = ensure_window_max(Type, Opts),
+			Increment = if
+				%% We cannot go above the maximum window size.
+				Size > MaxWindow -> MaxWindow - Window;
+				true -> Size - Window
+			end,
+			case Increment of
+				0 -> ok;
+				_ -> {ok, Increment}
+			end
+	end.
+
+%% Margin defaults to the default initial window size.
+ensure_window_margin(connection, Opts) ->
+	maps:get(connection_window_margin_size, Opts, 65535);
+ensure_window_margin(stream, Opts) ->
+	maps:get(stream_window_margin_size, Opts, 65535).
+
+%% Max window defaults to the max value allowed by the protocol.
+ensure_window_max(connection, Opts) ->
+	maps:get(max_connection_window_size, Opts, 16#7fffffff);
+ensure_window_max(stream, Opts) ->
+	maps:get(max_stream_window_size, Opts, 16#7fffffff).
+
+%% Threshold defaults to 10 times the default frame size.
+ensure_window_threshold(connection, Opts) ->
+	maps:get(connection_window_update_threshold, Opts, 163840);
+ensure_window_threshold(stream, Opts) ->
+	maps:get(stream_window_update_threshold, Opts, 163840).
 
 -spec update_window(1..16#7fffffff, State)
 	-> State when State::http2_machine().
@@ -1295,18 +1496,44 @@ update_window(StreamID, Size, State)
 -spec reset_stream(cow_http2:streamid(), State)
 	-> {ok, State} | {error, not_found} when State::http2_machine().
 reset_stream(StreamID, State=#http2_machine{streams=Streams0}) ->
-	case lists:keytake(StreamID, #stream.id, Streams0) of
-		{value, _, Streams} ->
+	case maps:take(StreamID, Streams0) of
+		{_, Streams} ->
 			{ok, stream_linger(StreamID, State#http2_machine{streams=Streams})};
-		false ->
+		error ->
 			{error, not_found}
 	end.
+
+%% Retrieve the buffer size for all streams.
+
+-spec get_connection_local_buffer_size(http2_machine()) -> non_neg_integer().
+get_connection_local_buffer_size(#http2_machine{streams=Streams}) ->
+	maps:fold(fun(_, #stream{local_buffer_size=Size}, Acc) ->
+		Acc + Size
+	end, 0, Streams).
 
 %% Retrieve a setting value, or its default value if not set.
 
 -spec get_local_setting(atom(), http2_machine()) -> atom() | integer().
 get_local_setting(Key, #http2_machine{local_settings=Settings}) ->
 	maps:get(Key, Settings, default_setting_value(Key)).
+
+-spec get_remote_settings(http2_machine()) -> map().
+get_remote_settings(#http2_machine{mode=Mode, remote_settings=Settings}) ->
+	Defaults0 = #{
+		header_table_size => default_setting_value(header_table_size),
+		enable_push => default_setting_value(enable_push),
+		max_concurrent_streams => default_setting_value(max_concurrent_streams),
+		initial_window_size => default_setting_value(initial_window_size),
+		max_frame_size => default_setting_value(max_frame_size),
+		max_header_list_size => default_setting_value(max_header_list_size)
+	},
+	Defaults = case Mode of
+		server ->
+			Defaults0#{enable_connect_protocol => default_setting_value(enable_connect_protocol)};
+		client ->
+			Defaults0
+	end,
+	maps:merge(Defaults, Settings).
 
 default_setting_value(header_table_size) -> 4096;
 default_setting_value(enable_push) -> true;
@@ -1322,6 +1549,30 @@ default_setting_value(enable_connect_protocol) -> false.
 -spec get_last_streamid(http2_machine()) -> cow_http2:streamid().
 get_last_streamid(#http2_machine{remote_streamid=RemoteStreamID}) ->
 	RemoteStreamID.
+
+%% Set last accepted streamid to the last known streamid, for the purpose
+%% ignoring frames for remote streams created after sending GOAWAY.
+
+-spec set_last_streamid(http2_machine()) -> {cow_http2:streamid(), http2_machine()}.
+set_last_streamid(State=#http2_machine{remote_streamid=StreamID,
+		last_remote_streamid=LastStreamID}) when StreamID =< LastStreamID->
+	{StreamID, State#http2_machine{last_remote_streamid = StreamID}}.
+
+%% Retrieve the local buffer size for a stream.
+
+-spec get_stream_local_buffer_size(cow_http2:streamid(), http2_machine())
+	-> {ok, non_neg_integer()} | {error, not_found | closed}.
+get_stream_local_buffer_size(StreamID, State=#http2_machine{mode=Mode,
+		local_streamid=LocalStreamID, remote_streamid=RemoteStreamID}) ->
+	case stream_get(StreamID, State) of
+		#stream{local_buffer_size=Size} ->
+			{ok, Size};
+		undefined when (?IS_LOCAL(Mode, StreamID) andalso (StreamID < LocalStreamID))
+				orelse ((not ?IS_LOCAL(Mode, StreamID)) andalso (StreamID =< RemoteStreamID)) ->
+			{error, closed};
+		undefined ->
+			{error, not_found}
+	end.
 
 %% Retrieve the local state for a stream, including the state in the queue.
 
@@ -1362,22 +1613,28 @@ get_stream_remote_state(StreamID, State=#http2_machine{mode=Mode,
 			{error, not_found}
 	end.
 
+%% Query whether the stream was reset recently by the remote endpoint.
+
+-spec is_lingering_stream(cow_http2:streamid(), http2_machine()) -> boolean().
+is_lingering_stream(StreamID, #http2_machine{
+		local_lingering_streams=Local, remote_lingering_streams=Remote}) ->
+	case lists:member(StreamID, Local) of
+		true -> true;
+		false -> lists:member(StreamID, Remote)
+	end.
+
 %% Stream-related functions.
 
 stream_get(StreamID, #http2_machine{streams=Streams}) ->
-	case lists:keyfind(StreamID, #stream.id, Streams) of
-		false -> undefined;
-		Stream -> Stream
-	end.
+	maps:get(StreamID, Streams, undefined).
 
 stream_store(#stream{id=StreamID, local=fin, remote=fin},
 		State=#http2_machine{streams=Streams0}) ->
-	Streams = lists:keydelete(StreamID, #stream.id, Streams0),
+	Streams = maps:remove(StreamID, Streams0),
 	State#http2_machine{streams=Streams};
 stream_store(Stream=#stream{id=StreamID},
-		State=#http2_machine{streams=Streams0}) ->
-	Streams = lists:keystore(StreamID, #stream.id, Streams0, Stream),
-	State#http2_machine{streams=Streams}.
+		State=#http2_machine{streams=Streams}) ->
+	State#http2_machine{streams=Streams#{StreamID => Stream}}.
 
 %% @todo Don't send an RST_STREAM if one was already sent.
 stream_reset(StreamID, State, Reason, HumanReadable) ->

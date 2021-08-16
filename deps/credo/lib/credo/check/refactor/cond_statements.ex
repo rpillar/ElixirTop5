@@ -1,46 +1,53 @@
 defmodule Credo.Check.Refactor.CondStatements do
-  @moduledoc false
+  use Credo.Check,
+    explanations: [
+      check: """
+      Each cond statement should have 3 or more statements including the
+      "always true" statement.
 
-  @checkdoc """
-  Each cond statement should have 3 or more statements including the
-  "always true" statement. Otherwise an `if` and `else` construct might be more
-  appropriate.
+      Consider an `if`/`else` construct if there is only one condition and the
+      "always true" statement, since it will more accessible to programmers
+      new to the codebase (and possibly new to Elixir).
 
-  Example:
+      Example:
 
-    cond do
-      x == y -> 0
-      true -> 1
-    end
+          cond do
+            x == y -> 0
+            true -> 1
+          end
 
-    # should be written as
+          # should be written as
 
-    if x == y do
-      0
-    else
-      1
-    end
+          if x == y do
+            0
+          else
+            1
+          end
 
-  """
-  @explanation [check: @checkdoc]
-
-  use Credo.Check
+      """
+    ]
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
     Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))
   end
 
+  # TODO: consider for experimental check front-loader (ast)
   defp traverse({:cond, meta, arguments} = ast, issues, issue_meta) do
-    count =
+    conditions =
       arguments
       |> Credo.Code.Block.do_block_for!()
       |> List.wrap()
-      |> Enum.count()
 
-    if count <= 2 do
+    count = Enum.count(conditions)
+
+    should_be_written_as_if_else_block? =
+      count <= 2 && contains_always_matching_condition?(conditions)
+
+    if should_be_written_as_if_else_block? do
       {ast, issues ++ [issue_for(issue_meta, meta[:line], :cond)]}
     else
       {ast, issues}
@@ -49,6 +56,19 @@ defmodule Credo.Check.Refactor.CondStatements do
 
   defp traverse(ast, issues, _issue_meta) do
     {ast, issues}
+  end
+
+  defp contains_always_matching_condition?(conditions) do
+    Enum.any?(conditions, fn
+      {:->, _meta, [[{name, _meta2, nil}], _args]} when is_atom(name) ->
+        name |> to_string |> String.starts_with?("_")
+
+      {:->, _meta, [[true], _args]} ->
+        true
+
+      _ ->
+        false
+    end)
   end
 
   defp issue_for(issue_meta, line_no, trigger) do

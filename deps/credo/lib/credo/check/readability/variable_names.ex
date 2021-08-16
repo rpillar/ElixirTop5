@@ -1,30 +1,31 @@
 defmodule Credo.Check.Readability.VariableNames do
-  @moduledoc false
+  use Credo.Check,
+    base_priority: :high,
+    explanations: [
+      check: """
+      Variable names are always written in snake_case in Elixir.
 
-  @checkdoc """
-  Variable names are always written in snake_case in Elixir.
+          # snake_case:
 
-      # snake_case:
+          incoming_result = handle_incoming_message(message)
 
-      incoming_result = handle_incoming_message(message)
+          # not snake_case
 
-      # not snake_case
+          incomingResult = handle_incoming_message(message)
 
-      incomingResult = handle_incoming_message(message)
-
-  Like all `Readability` issues, this one is not a technical concern.
-  But you can improve the odds of others reading and liking your code by making
-  it easier to follow.
-  """
-  @explanation [check: @checkdoc]
-  @special_var_names [:__CALLER__, :__DIR__, :__ENV__, :__MODULE__]
-
-  use Credo.Check, base_priority: :high
+      Like all `Readability` issues, this one is not a technical concern.
+      But you can improve the odds of others reading and liking your code by making
+      it easier to follow.
+      """
+    ]
 
   alias Credo.Code.Name
 
+  @special_var_names [:__CALLER__, :__DIR__, :__ENV__, :__MODULE__]
+
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
     Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))

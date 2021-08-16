@@ -1,31 +1,35 @@
 defmodule Credo.Check.Readability.Specs do
-  @moduledoc false
+  use Credo.Check,
+    tags: [:controversial],
+    explanations: [
+      check: """
+      Functions, callbacks and macros need typespecs.
 
-  @checkdoc """
-  Functions, callbacks and macros need typespecs.
+      Adding typespecs gives tools like Dialyzer more information when performing
+      checks for type errors in function calls and definitions.
 
-  Adding typespecs gives tools like Dialyzer more information when performing
-  checks for type errors in function calls and definitions.
+          @spec add(integer, integer) :: integer
+          def add(a, b), do: a + b
 
-      @spec add(integer, integer) :: integer
-      def add(a, b), do: a + b
+      Functions with multiple arities need to have a spec defined for each arity:
 
-  Functions with multiple arities need to have a spec defined for each arity:
+          @spec foo(integer) :: boolean
+          @spec foo(integer, integer) :: boolean
+          def foo(a), do: a > 0
+          def foo(a, b), do: a > b
 
-      @spec foo(integer) :: boolean
-      @spec foo(integer, integer) :: boolean
-      def foo(a), do: a > 0
-      def foo(a, b), do: a > b
+      The check only considers whether the specification is present, it doesn't
+      perform any actual type checking.
 
-  The check only considers whether the specification is present, it doesn't
-  perform any actual type checking.
-  """
-  @explanation [check: @checkdoc]
-
-  use Credo.Check
+      Like all `Readability` issues, this one is not a technical concern.
+      But you can improve the odds of others reading and liking your code by making
+      it easier to follow.
+      """
+    ]
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
     specs = Credo.Code.prewalk(source_file, &find_specs(&1, &2))
 
@@ -33,18 +37,19 @@ defmodule Credo.Check.Readability.Specs do
   end
 
   defp find_specs(
-         {:spec, _, [{:when, _, [{:::, _, [{name, _, args}, _]}, _]} | _]} = ast,
+         {:spec, _, [{:when, _, [{:"::", _, [{name, _, args}, _]}, _]} | _]} = ast,
          specs
        ) do
     {ast, [{name, length(args)} | specs]}
   end
 
   defp find_specs({:spec, _, [{_, _, [{name, _, args} | _]}]} = ast, specs)
-       when is_list(args) do
+       when is_list(args) or is_nil(args) do
+    args = with nil <- args, do: []
     {ast, [{name, length(args)} | specs]}
   end
 
-  defp find_specs({:impl, _, [true]} = ast, specs) do
+  defp find_specs({:impl, _, [impl]} = ast, specs) when impl != false do
     {ast, [:impl | specs]}
   end
 
@@ -64,6 +69,7 @@ defmodule Credo.Check.Readability.Specs do
     {ast, issues}
   end
 
+  # TODO: consider for experimental check front-loader (ast)
   defp traverse(
          {:def, meta, [{:when, _, def_ast} | _]},
          issues,
@@ -79,7 +85,9 @@ defmodule Credo.Check.Readability.Specs do
          specs,
          issue_meta
        )
-       when is_list(args) do
+       when is_list(args) or is_nil(args) do
+    args = with nil <- args, do: []
+
     if {name, length(args)} in specs do
       {ast, issues}
     else

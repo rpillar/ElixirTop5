@@ -12,9 +12,16 @@ defmodule Phoenix.Config do
   @doc """
   Starts a Phoenix configuration handler.
   """
-  def start_link(module, config, defaults, opts \\ []) do
+  def start_link({module, config, defaults, opts}) do
     permanent = Keyword.keys(defaults)
     GenServer.start_link(__MODULE__, {module, config, permanent}, opts)
+  end
+
+  @doc """
+  Puts a given key-value in config.
+  """
+  def put_new(module, key, value) do
+    :ets.insert_new(module, {key, value})
   end
 
   @doc """
@@ -70,8 +77,17 @@ defmodule Phoenix.Config do
   Useful to read a particular value at compilation time.
   """
   def from_env(otp_app, module, defaults) do
-    Keyword.merge(defaults, fetch_config(otp_app, module), &merger/3)
+    config = fetch_config(otp_app, module)
+
+    merge(defaults, config)
   end
+
+  @doc """
+  Take 2 keyword lists and merge them recursively.
+
+  Used to merge configuration values into defaults.
+  """
+  def merge(a, b), do: Keyword.merge(a, b, &merger/3)
 
   defp fetch_config(otp_app, module) do
     case Application.fetch_env(otp_app, module) do
@@ -106,7 +122,7 @@ defmodule Phoenix.Config do
   def init({module, config, permanent}) do
     :ets.new(module, [:named_table, :public, read_concurrency: true])
     update(module, config, [])
-    :ets.insert(module, __config__: self())
+    :ets.insert(module, {:__config__, self()})
     {:ok, {module, [:__config__ | permanent]}}
   end
 

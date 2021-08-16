@@ -7,7 +7,11 @@ defmodule Plug.Crypto.KeyGenerator do
   secret. This lets applications have a single secure secret, but avoid reusing
   that key in multiple incompatible contexts.
 
-  see http://tools.ietf.org/html/rfc2898#section-5.2
+  The returned key is a binary. You may invoke functions in the `Base` module,
+  such as `Base.url_encode64/2`, to convert this binary into a textual
+  representation.
+
+  See http://tools.ietf.org/html/rfc2898#section-5.2
   """
 
   use Bitwise
@@ -31,16 +35,25 @@ defmodule Plug.Crypto.KeyGenerator do
     length = Keyword.get(opts, :length, 32)
     digest = Keyword.get(opts, :digest, :sha256)
     cache = Keyword.get(opts, :cache)
+    generate(secret, salt, iterations, length, digest, cache)
+  end
 
-    if length > @max_length do
-      raise ArgumentError, "length must be less than or equal to #{@max_length}"
-    else
-      with_cache(cache, {secret, salt, iterations, length, digest}, fn ->
-        generate(mac_fun(digest, secret), salt, iterations, length, 1, [], 0)
-      end)
+  @doc false
+  def generate(secret, salt, iterations, length, digest, cache) do
+    cond do
+      not is_integer(iterations) or iterations < 1 ->
+        raise ArgumentError, "iterations must be an integer >= 1"
+
+      length > @max_length ->
+        raise ArgumentError, "length must be less than or equal to #{@max_length}"
+
+      true ->
+        with_cache(cache, {secret, salt, iterations, length, digest}, fn ->
+          generate(hmac_fun(digest, secret), salt, iterations, length, 1, [], 0)
+        end)
     end
   rescue
-    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(System.stacktrace())
+    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(__STACKTRACE__)
   end
 
   defp with_cache(nil, _key, fun), do: fun.()
@@ -79,7 +92,10 @@ defmodule Plug.Crypto.KeyGenerator do
     iterate(fun, iteration - 1, next, :crypto.exor(next, acc))
   end
 
-  defp mac_fun(digest, secret) do
-    &:crypto.hmac(digest, secret, &1)
+  # TODO: remove when we require OTP 22.1
+  if Code.ensure_loaded?(:crypto) and function_exported?(:crypto, :mac, 4) do
+    defp hmac_fun(digest, key), do: &:crypto.mac(:hmac, digest, key, &1)
+  else
+    defp hmac_fun(digest, key), do: &:crypto.hmac(digest, key, &1)
   end
 end

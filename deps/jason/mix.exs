@@ -1,7 +1,7 @@
 defmodule Jason.Mixfile do
   use Mix.Project
 
-  @version "1.1.2"
+  @version "1.2.2"
 
   def project() do
     [
@@ -11,8 +11,7 @@ defmodule Jason.Mixfile do
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :test,
       deps: deps(),
-      aliases: aliases(),
-      preferred_cli_env: ["bench.encode": :bench, "bench.decode": :bench, docs: :docs],
+      preferred_cli_env: [docs: :docs],
       dialyzer: dialyzer(),
       description: description(),
       package: package(),
@@ -28,16 +27,8 @@ defmodule Jason.Mixfile do
 
   defp deps() do
     [
-      {:decimal, "~> 1.0", optional: true},
-      {:benchee, "~> 0.8", only: :bench},
-      {:benchee_html, "~> 0.1", only: :bench, github: "michalmuskala/benchee_html"},
-      {:poison, "~> 3.0", only: :bench},
-      {:exjsx, "~> 4.0", only: :bench},
-      {:tiny, "~> 1.0", only: :bench},
-      {:jsone, "~> 1.4", only: :bench},
-      {:jiffy, "~> 0.14", only: :bench},
-      {:json, "~> 1.0", only: :bench},
-      {:dialyxir, "~> 0.5", only: [:dev, :test], runtime: false},
+      {:decimal, "~> 1.0 or ~> 2.0", optional: true},
+      {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.18", only: :docs},
     ] ++ maybe_stream_data()
   end
@@ -48,13 +39,6 @@ defmodule Jason.Mixfile do
     else
       []
     end
-  end
-
-  defp aliases() do
-    [
-      "bench.encode": ["run bench/encode.exs"],
-      "bench.decode": ["run bench/decode.exs"]
-    ]
   end
 
   defp dialyzer() do
@@ -72,7 +56,7 @@ defmodule Jason.Mixfile do
   defp package() do
     [
       maintainers: ["Michał Muskała"],
-      licenses: ["Apache 2.0"],
+      licenses: ["Apache-2.0"],
       links: %{"GitHub" => "https://github.com/michalmuskala/jason"}
     ]
   end

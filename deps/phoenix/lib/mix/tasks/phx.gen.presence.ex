@@ -2,17 +2,16 @@ defmodule Mix.Tasks.Phx.Gen.Presence do
   @shortdoc "Generates a Presence tracker"
 
   @moduledoc """
-  Generates a Presence tracker for your application.
+  Generates a Presence tracker.
 
       mix phx.gen.presence
-
       mix phx.gen.presence MyPresence
 
-  The only argument is the module name of the Presence tracker,
-  which defaults to Presence.
+  The argument, which defaults to `Presence`, defines the module name of the
+  Presence tracker.
 
-  A new file will be generated in `lib/my_app_web/channels/presence.ex`,
-  where `my_app_web` is the snake cased version of the module name provided.
+  Generates a new file, `lib/my_app_web/channels/my_presence.ex`, where
+  `my_presence` is the snake-cased version of the provided module name.
   """
   use Mix.Task
 
@@ -22,7 +21,7 @@ defmodule Mix.Tasks.Phx.Gen.Presence do
   end
   def run([alias_name]) do
     if Mix.Project.umbrella?() do
-      Mix.raise "mix phx.gen.presence can only be run inside an application directory"
+      Mix.raise "mix phx.gen.presence must be invoked from within your *_web application root directory"
     end
     context_app = Mix.Phoenix.context_app()
     otp_app = Mix.Phoenix.otp_app()
@@ -32,14 +31,16 @@ defmodule Mix.Tasks.Phx.Gen.Presence do
 
     binding = inflections ++ [
       otp_app: otp_app,
-      pubsub_server: Module.concat(inflections[:base], PubSub)
+      pubsub_server: Module.concat(inflections[:base], "PubSub")
     ]
+
     files = [
       {:eex, "presence.ex", Path.join(web_prefix, "channels/#{binding[:path]}.ex")},
     ]
+
     Mix.Phoenix.copy_from paths(), "priv/templates/phx.gen.presence", binding, files
 
-    Mix.shell.info """
+    Mix.shell().info """
 
     Add your new module to your supervision tree,
     in lib/#{otp_app}/application.ex:

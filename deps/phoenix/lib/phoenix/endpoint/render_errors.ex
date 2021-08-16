@@ -9,6 +9,8 @@ defmodule Phoenix.Endpoint.RenderErrors do
   #
   #   * `:view` - the name of the view we render templates against
   #   * `:format` - the format to use when none is available from the request
+  #   * `:accepts` - list of accepted formats errors will be rendered for
+  #   * `:log` - the `t:Logger.level/0` or `false` to disable logging rendered errors
   #
   @moduledoc false
 
@@ -44,7 +46,7 @@ defmodule Phoenix.Endpoint.RenderErrors do
             unquote(__MODULE__).__catch__(conn, kind, reason, stack, @phoenix_render_errors)
         catch
           kind, reason ->
-            stack = System.stacktrace()
+            stack = __STACKTRACE__
             unquote(__MODULE__).__catch__(conn, kind, reason, stack, @phoenix_render_errors)
         end
       end
@@ -66,17 +68,18 @@ defmodule Phoenix.Endpoint.RenderErrors do
   end
 
   defp instrument_render_and_send(conn, kind, reason, stack, opts) do
-    level = Keyword.get(opts, :log_level, :info)
+    level = Keyword.get(opts, :log, :debug)
     status = status(kind, reason)
     conn = error_conn(conn, kind, reason)
-    metadata = %{status: status, conn: conn, kind: kind, reason: reason, stacktrace: stack, log_level: level}
+    start = System.monotonic_time()
+    metadata = %{conn: conn, status: status, kind: kind, reason: reason, stacktrace: stack, log: level}
 
-    conn =
-      Phoenix.Endpoint.instrument(conn, :phoenix_error_render, metadata, fn ->
-        render(conn, status, kind, reason, stack, opts)
-      end)
-
-    send_resp(conn)
+    try do
+      render(conn, status, kind, reason, stack, opts)
+    after
+      duration = System.monotonic_time() - start
+      :telemetry.execute([:phoenix, :error_rendered], %{duration: duration}, metadata)
+    end
   end
 
   defp error_conn(_conn, :error, %NoRouteError{conn: conn}), do: conn
@@ -100,15 +103,18 @@ defmodule Phoenix.Endpoint.RenderErrors do
       |> maybe_fetch_query_params()
       |> maybe_fetch_format(opts)
       |> Plug.Conn.put_status(status)
+      |> Controller.put_root_layout(opts[:root_layout] || false)
       |> Controller.put_layout(opts[:layout] || false)
       |> Controller.put_view(view)
 
     reason = Exception.normalize(kind, reason, stack)
     format = Controller.get_format(conn)
     template = "#{conn.status}.#{format}"
-    assigns = %{kind: kind, reason: reason, stack: stack}
+    assigns = %{kind: kind, reason: reason, stack: stack, status: conn.status}
 
-    Controller.__put_render__(conn, view, template, format, assigns)
+    conn
+    |> Controller.put_view(view)
+    |> Controller.render(template, assigns)
   end
 
   defp maybe_fetch_query_params(conn) do

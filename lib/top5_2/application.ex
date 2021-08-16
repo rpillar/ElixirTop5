@@ -11,9 +11,10 @@ defmodule Top52.Application do
       # Start the Ecto repository
       Top52.Repo,
       # Start the endpoint when the application starts
-      Top52Web.Endpoint
+      Top52Web.Endpoint,
       # Starts a worker by calling: Top52.Worker.start_link(arg)
       # {Top52.Worker, arg},
+      {Phoenix.PubSub, [name: Top52.PubSub, adapter: Phoenix.PubSub.PG2]}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

@@ -1,10 +1,14 @@
+Code.require_file("types.exs", __DIR__)
+
 defmodule Ecto.Integration.Schema do
   defmacro __using__(_) do
     quote do
       use Ecto.Schema
+
       type =
         Application.get_env(:ecto, :primary_key_type) ||
-        raise ":primary_key_type not set in :ecto application"
+          raise ":primary_key_type not set in :ecto application"
+
       @primary_key {:id, type, autogenerate: true}
       @foreign_key_type type
     end
@@ -28,11 +32,12 @@ defmodule Ecto.Integration.Post do
   schema "posts" do
     field :counter, :id # Same as integer
     field :title, :string
-    field :text, :binary
+    field :blob, :binary
     field :temp, :string, default: "temp", virtual: true
     field :public, :boolean, default: true
     field :cost, :decimal
     field :visits, :integer
+    field :wrapped_visits, WrappedInteger
     field :intensity, :float
     field :bid, :binary_id
     field :uuid, Ecto.Integration.TestRepo.uuid(), autogenerate: true
@@ -41,12 +46,17 @@ defmodule Ecto.Integration.Post do
     field :intensities, {:map, :float}
     field :posted, :date
     has_many :comments, Ecto.Integration.Comment, on_delete: :delete_all, on_replace: :delete
+    has_many :force_comments, Ecto.Integration.Comment, on_replace: :delete_if_exists
+    has_many :ordered_comments, Ecto.Integration.Comment, preload_order: [:text]
+    # The post<->permalink relationship should be marked as uniq
     has_one :permalink, Ecto.Integration.Permalink, on_delete: :delete_all, on_replace: :delete
+    has_one :force_permalink, Ecto.Integration.Permalink, on_replace: :delete_if_exists
     has_one :update_permalink, Ecto.Integration.Permalink, foreign_key: :post_id, on_delete: :delete_all, on_replace: :update
     has_many :comments_authors, through: [:comments, :author]
     belongs_to :author, Ecto.Integration.User
     many_to_many :users, Ecto.Integration.User,
       join_through: "posts_users", on_delete: :delete_all, on_replace: :delete
+    many_to_many :ordered_users, Ecto.Integration.User, join_through: "posts_users", preload_order: [desc: :name]
     many_to_many :unique_users, Ecto.Integration.User,
       join_through: "posts_users", unique: true
     many_to_many :constraint_users, Ecto.Integration.User,
@@ -58,7 +68,7 @@ defmodule Ecto.Integration.Post do
   end
 
   def changeset(schema, params) do
-    cast(schema, params, ~w(counter title text temp public cost visits
+    cast(schema, params, ~w(counter title blob temp public cost visits
                            intensity bid uuid meta posted)a)
   end
 end
@@ -100,6 +110,8 @@ defmodule Ecto.Integration.Permalink do
 
   schema "permalinks" do
     field :url, :string, source: :uniform_resource_locator
+    field :title, :string
+    field :posted, :date, virtual: true
     belongs_to :post, Ecto.Integration.Post, on_replace: :nilify
     belongs_to :update_post, Ecto.Integration.Post, on_replace: :update, foreign_key: :post_id, define_field: false
     belongs_to :user, Ecto.Integration.User
@@ -107,7 +119,7 @@ defmodule Ecto.Integration.Permalink do
   end
 
   def changeset(schema, params) do
-    Ecto.Changeset.cast(schema, params, [:url])
+    Ecto.Changeset.cast(schema, params, [:url, :title])
   end
 end
 
@@ -146,6 +158,14 @@ defmodule Ecto.Integration.User do
     belongs_to :custom, Ecto.Integration.Custom, references: :bid, type: :binary_id
     many_to_many :schema_posts, Ecto.Integration.Post, join_through: Ecto.Integration.PostUser
     many_to_many :unique_posts, Ecto.Integration.Post, join_through: Ecto.Integration.PostUserCompositePk
+
+    has_many :related_2nd_order_posts, through: [:posts, :users, :posts]
+    has_many :users_through_schema_posts, through: [:schema_posts, :users]
+
+    has_many :v2_comments, Ecto.Integration.Comment, foreign_key: :author_id, where: [lock_version: 2]
+    has_many :v2_comments_posts, through: [:v2_comments, :post]
+    has_many :co_commenters, through: [:comments, :post, :comments_authors]
+
     timestamps(type: :utc_datetime)
   end
 end
@@ -207,16 +227,20 @@ defmodule Ecto.Integration.Item do
   This module is used to test:
 
     * Embedding
+    * Preloading associations in embedded schemas
 
   """
   use Ecto.Schema
 
   embedded_schema do
+    field :reference, PrefixedString
     field :price, :integer
     field :valid_at, :date
 
     embeds_one :primary_color, Ecto.Integration.ItemColor
     embeds_many :secondary_colors, Ecto.Integration.ItemColor
+
+    belongs_to :user, Ecto.Integration.User
   end
 end
 
@@ -245,8 +269,9 @@ defmodule Ecto.Integration.Order do
   use Ecto.Integration.Schema
 
   schema "orders" do
-    field :instructions, :string
+    field :meta, :map
     embeds_one :item, Ecto.Integration.Item
+    embeds_many :items, Ecto.Integration.Item
     belongs_to :permalink, Ecto.Integration.Permalink
   end
 end

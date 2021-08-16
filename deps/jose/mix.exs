@@ -4,8 +4,8 @@ defmodule JOSE.Mixfile do
   def project() do
     [
       app: :jose,
-      version: "1.9.0",
-      elixir: "~> 1.0",
+      version: "1.11.2",
+      elixir: "~> 1.4",
       erlc_options: erlc_options(),
       build_embedded: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
@@ -22,12 +22,11 @@ defmodule JOSE.Mixfile do
   end
 
   def application() do
-    [mod: {:jose_app, []}, applications: [:crypto, :asn1, :public_key, :base64url]]
+    [mod: {:jose_app, []}, extra_applications: [:crypto, :asn1, :public_key]]
   end
 
   defp deps() do
     [
-      {:base64url, "~> 0.0.1"},
       # {:cutkey, github: "potatosalad/cutkey", only: [:dev, :test]},
       {:jason, "~> 1.1", only: [:dev, :test]},
       {:jsone, "~> 1.4", only: [:dev, :test]},
@@ -37,8 +36,7 @@ defmodule JOSE.Mixfile do
       {:libsodium, "~> 0.0.10", only: [:dev, :test]},
       {:ojson, "~> 1.0", only: [:dev, :test]},
       {:poison, "~> 4.0", only: [:dev, :test]},
-      {:ex_doc, "~> 0.19", only: :dev},
-      {:earmark, "~> 1.3", only: :dev}
+      {:ex_doc, "~> 0.19", only: [:docs, :dev]}
     ]
   end
 

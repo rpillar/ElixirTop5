@@ -1,14 +1,18 @@
+# Phoenix/Ecto
+
+[![Action Status](https://github.com/phoenixframework/phoenix_ecto/workflows/CI/badge.svg)](https://github.com/phoenixframework/phoenix_ecto/actions?query=workflow%3ACI)
+
 A project that integrates [Phoenix](http://github.com/phoenixframework/phoenix) with [Ecto](http://github.com/elixir-lang/ecto), implementing all relevant protocols.
 
 ## Usage
 
-You can use `phoenix_ecto` in your projects in two steps:
+You can use `:phoenix_ecto` in your projects in two steps:
 
 1. Add it to your `mix.exs` dependencies:
 
     ```elixir
     def deps do
-      [{:phoenix_ecto, "~> 3.0"}]
+      [{:phoenix_ecto, "~> 4.0"}]
     end
     ```
 
@@ -22,7 +26,7 @@ You can use `phoenix_ecto` in your projects in two steps:
 
 ## Concurrent browser tests
 
-This library also provides a plug called `Phoenix.Ecto.SQL.Sandbox` that allows developers to run acceptance tests powered by headless browsers such as Phantom.js and Selenium concurrently. If you are not familiar with Ecto's SQL sandbox, we recommend you to first get acquainted with it by [reading `Ecto.Adapters.SQL.Sandbox` documentation](https://hexdocs.pm/ecto/Ecto.Adapters.SQL.Sandbox.html).
+This library also provides a plug called `Phoenix.Ecto.SQL.Sandbox` that allows developers to run acceptance tests powered by headless browsers such as ChromeDriver and Selenium concurrently. If you are not familiar with Ecto's SQL sandbox, we recommend you to first get acquainted with it by [reading `Ecto.Adapters.SQL.Sandbox` documentation](https://hexdocs.pm/ecto_sql/Ecto.Adapters.SQL.Sandbox.html).
 
 To enable concurrent acceptance tests, make sure you are using PostgreSQL and follow the instructions below:
 
@@ -39,10 +43,10 @@ To enable concurrent acceptance tests, make sure you are using PostgreSQL and fo
       plug Phoenix.Ecto.SQL.Sandbox
     end
     ```
-    
+
     Make sure that this is placed **before** the line `plug YourApp.Router` (or any other plug that may access the database).
 
-You can now checkout a sandboxed connection and pass the connection information to an acceptance testing tool like [Hound](https://github.com/hashnuke/hound) or [Wallaby](https://github.com/keathley/wallaby).
+You can now checkout a sandboxed connection and pass the connection information to an acceptance testing tool like [Hound](https://github.com/hashnuke/hound) or [Wallaby](https://github.com/elixir-wallaby/wallaby).
 
 ### Hound
 
@@ -58,7 +62,7 @@ Make sure to start it at the top of your `test/test_helper.exs`:
 {:ok, _} = Application.ensure_all_started(:hound)
 ```
 
-Then add the following to your test case (or to your case template):
+Then add the following to your test case (or case template):
 
 ```elixir
 use Hound.Helpers
@@ -67,6 +71,7 @@ setup do
   :ok = Ecto.Adapters.SQL.Sandbox.checkout(YourApp.Repo)
   metadata = Phoenix.Ecto.SQL.Sandbox.metadata_for(YourApp.Repo, self())
   Hound.start_session(metadata: metadata)
+  :ok
 end
 ```
 
@@ -77,16 +82,25 @@ Hound supports multiple drivers like Chrome, Firefox, etc but it does not suppor
 To write concurrent acceptance tests with Wallaby, first add it as a dependency to your `mix.exs`:
 
 ```elixir
-{:wallaby, "~> 0.6"}
+{:wallaby, "~> 0.25", only: :test}
 ```
 
-Make sure to start it at the top of your `test/test_helper.exs`:
+Wallaby can take care of setting up the Ecto Sandbox for you if you use `use Wallaby.Feature` in your test module.
 
 ```elixir
-{:ok, _} = Application.ensure_all_started(:wallaby)
+defmodule MyAppWeb.PageFeature do
+  use ExUnit.Case, async: true
+  use Wallaby.Feature
+
+  feature "shows some text", %{session: session} do
+    session
+    |> visit("/home")
+    |> assert_text("Hello world!")
+  end
+end
 ```
 
-Then add the following to your test case (or to your case template):
+If you don't `use Wallaby.Feature`, you can add the following to your test case (or case template):
 
 ```elixir
 use Wallaby.DSL
@@ -98,14 +112,14 @@ setup do
 end
 ```
 
-Wallaby currently supports PhantomJS (including concurrent tests). Support for other drivers may be added in the future.
+Wallaby currently supports ChromeDriver and Selenium, allowing testing in almost any browser.
 
 ## The Phoenix <-> Ecto integration
 
 Thanks to Elixir protocols, the integration between Phoenix and Ecto is simply a matter of implementing a handful of protocols. We provide the following implementations:
 
   * `Phoenix.HTML.FormData` protocol for `Ecto.Changeset`
-  * `Phoenix.HTML.Safe` protocol for `Decimal`, `Ecto.Date`, `Ecto.Time` and `Ecto.DateTime`
+  * `Phoenix.HTML.Safe` protocol for `Decimal`
   * `Plug.Exception` protocol for the relevant Ecto exceptions
 
 ## Configuration
@@ -117,6 +131,8 @@ config :phoenix_ecto,
   exclude_ecto_exceptions_from_plug: [Ecto.NoResultsError]
 ```
 
-## License
+## Copyright and License
 
-Same license as Phoenix.
+Copyright (c) 2015, Chris McCord.
+
+Phoenix/Ecto source code is licensed under the [MIT License](https://github.com/phoenixframework/phoenix_ecto/blob/master/LICENSE).

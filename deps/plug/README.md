@@ -1,6 +1,6 @@
 # Plug
 
-[![Build Status](https://travis-ci.org/elixir-plug/plug.svg?branch=master)](https://travis-ci.org/elixir-plug/plug)
+[![Build Status](https://github.com/elixir-plug/plug/workflows/CI/badge.svg)](https://github.com/elixir-plug/plug/actions?query=workflow%3A%22CI%22)
 [![Inline docs](https://inch-ci.org/github/elixir-plug/plug.svg?branch=master)](http://inch-ci.org/github/elixir-plug/plug)
 
 Plug is:
@@ -10,6 +10,18 @@ Plug is:
 
 [Documentation for Plug is available online](http://hexdocs.pm/plug/).
 
+## Installation
+
+In order to use Plug, you need a webserver and its bindings for Plug. The Cowboy webserver is the most common one, which can be installed by adding `plug_cowboy` as a dependency to your `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:plug_cowboy, "~> 2.0"}
+  ]
+end
+```
+
 ## Hello world
 
 ```elixir
@@ -18,7 +30,6 @@ defmodule MyPlug do
 
   def init(options) do
     # initialize options
-
     options
   end
 
@@ -38,28 +49,53 @@ The snippet above shows a very simple example on how to use Plug. Save that snip
     iex> {:ok, _} = Plug.Cowboy.http MyPlug, []
     {:ok, #PID<...>}
 
-Access "http://localhost:4000/" and we are done! For now, we have directly started the server in our terminal but, for production deployments, you likely want to start it in your supervision tree. See the "Supervised handlers" section below.
+Access [http://localhost:4000/](http://localhost:4000/) and we are done! For now, we have directly started the server in our terminal but, for production deployments, you likely want to start it in your supervision tree. See the [Supervised handlers](#supervised-handlers) section next.
 
-## Installation
+## Supervised handlers
 
-In order to use Plug, you need a webserver and its bindings for Plug. For example, to use the Cowboy webserver with Plug, just add the `plug_cowboy` dependency to your `mix.exs`:
+On a production system, you likely want to start your Plug pipeline under your application's supervision tree. Start a new Elixir project with the `--sup` flag:
+
+    $ mix new my_app --sup
+
+and then update `lib/my_app/application.ex` as follows:
 
 ```elixir
-def deps do
-  [
-    {:plug_cowboy, "~> 2.0"}
-  ]
+defmodule MyApp do
+  # See https://hexdocs.pm/elixir/Application.html
+  # for more information on OTP Applications
+  @moduledoc false
+
+  use Application
+
+  def start(_type, _args) do
+    # List all child processes to be supervised
+    children = [
+      {Plug.Cowboy, scheme: :http, plug: MyPlug, options: [port: 4001]}
+    ]
+
+    # See https://hexdocs.pm/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :one_for_one, name: MyApp.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
 end
 ```
+
+Now run `mix run --no-halt` and it will start your application with a web server running at `localhost:4001`.
 
 ## Supported Versions
 
 | Branch | Support                  |
 | ------ | ------------------------ |
-| v1.6   | Bug fixes                |
-| v1.5   | Security patches only    |
-| v1.4   | Security patches only    |
-| v1.3   | Security patches only    |
+| v1.11  | Bug fixes                |
+| v1.10  | Security patches only    |
+| v1.9   | Security patches only    |
+| v1.8   | Security patches only    |
+| v1.7   | Security patches only    |
+| v1.6   | Security patches only    |
+| v1.5   | Unsupported from 03/2021 |
+| v1.4   | Unsupported from 12/2018 |
+| v1.3   | Unsupported from 12/2018 |
 | v1.2   | Unsupported from 06/2018 |
 | v1.1   | Unsupported from 01/2018 |
 | v1.0   | Unsupported from 05/2017 |
@@ -146,38 +182,6 @@ This also means that a catch all `match` block is recommended to be defined as i
 
 Each route needs to return the connection as per the Plug specification. See the `Plug.Router` docs for more information.
 
-## Supervised handlers
-
-On a production system, you likely want to start your Plug pipeline under your application's supervision tree. Plug provides the `child_spec/3` function to do just that. Start a new Elixir project with the `--sup` flag:
-
-```elixir
-$ mix new my_app --sup
-```
-
-and then update `lib/my_app/application.ex` as follows:
-
-```elixir
-defmodule MyApp do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
-  @moduledoc false
-
-  use Application
-
-  def start(_type, _args) do
-    # List all child processes to be supervised
-    children = [
-      Plug.Cowboy.child_spec(scheme: :http, plug: MyRouter, options: [port: 4001])
-    ]
-
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: MyApp.Supervisor]
-    Supervisor.start_link(children, opts)
-  end
-end
-```
-
 ## Testing plugs
 
 Plug ships with a `Plug.Test` module that makes testing your plugs easy. Here is how we can test the router from above (or any other plug):
@@ -208,12 +212,14 @@ end
 
 This project aims to ship with different plugs that can be re-used across applications:
 
+  * `Plug.BasicAuth` - provides Basic HTTP authentication;
   * `Plug.CSRFProtection` - adds Cross-Site Request Forgery protection to your application. Typically required if you are using `Plug.Session`;
   * `Plug.Head` - converts HEAD requests to GET requests;
   * `Plug.Logger` - logs requests;
   * `Plug.MethodOverride` - overrides a request method with one specified in the request parameters;
   * `Plug.Parsers` - responsible for parsing the request body given its content-type;
   * `Plug.RequestId` - sets up a request ID to be used in logs;
+  * `Plug.RewriteOn` - rewrite the request's host/port/protocol from `x-forwarded-*` headers;
   * `Plug.Session` - handles session management and storage;
   * `Plug.SSL` - enforces requests through SSL;
   * `Plug.Static` - serves static files;
@@ -232,9 +238,7 @@ Modules that can be used after you use `Plug.Router` or `Plug.Builder` to help d
 
 We welcome everyone to contribute to Plug and help us tackle existing issues!
 
-Use the [issue tracker][issues] for bug reports or feature requests. You may also start a discussion on the [mailing list][ML] or the **[#elixir-lang][IRC]** channel on [Freenode][freenode] IRC. Open a [pull request][pulls] when you are ready to contribute.
-
-When submitting a pull request you should not update the `CHANGELOG.md`.
+Use the [issue tracker][issues] for bug reports or feature requests. Open a [pull request][pulls] when you are ready to contribute. When submitting a pull request you should not update the `CHANGELOG.md`.
 
 If you are planning to contribute documentation, [please check our best practices for writing documentation][writing-docs].
 
@@ -242,14 +246,10 @@ Finally, remember all interactions in our official spaces follow our [Code of Co
 
 ## License
 
-Plug source code is released under Apache 2 License.
+Plug source code is released under Apache License 2.0.
 Check LICENSE file for more information.
 
   [issues]: https://github.com/elixir-plug/plug/issues
   [pulls]: https://github.com/elixir-plug/plug/pulls
-  [ML]: https://groups.google.com/group/elixir-lang-core
   [code-of-conduct]: https://github.com/elixir-lang/elixir/blob/master/CODE_OF_CONDUCT.md
   [writing-docs]: https://hexdocs.pm/elixir/writing-documentation.html
-  [IRC]: https://webchat.freenode.net/?channels=#elixir-lang
-  [freenode]: https://freenode.net/
-  [cowboy]: https://github.com/ninenines/cowboy

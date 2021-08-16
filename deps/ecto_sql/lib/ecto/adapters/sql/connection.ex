@@ -58,7 +58,7 @@ defmodule Ecto.Adapters.SQL.Connection do
   Must return an empty list if the error does not come
   from any constraint.
   """
-  @callback to_constraints(exception :: Exception.t) :: Keyword.t
+  @callback to_constraints(exception :: Exception.t, options :: Keyword.t) :: Keyword.t
 
   ## Queries
 
@@ -83,7 +83,8 @@ defmodule Ecto.Adapters.SQL.Connection do
   """
   @callback insert(prefix ::String.t, table :: String.t,
                    header :: [atom], rows :: [[atom | nil]],
-                   on_conflict :: Ecto.Adapter.Schema.on_conflict, returning :: [atom]) :: iodata
+                   on_conflict :: Ecto.Adapter.Schema.on_conflict, returning :: [atom],
+                   placeholders :: [term]) :: iodata
 
   @doc """
   Returns an UPDATE for the given `fields` in `table` filtered by
@@ -98,6 +99,17 @@ defmodule Ecto.Adapters.SQL.Connection do
   @callback delete(prefix :: String.t, table :: String.t,
                    filters :: [atom], returning :: [atom]) :: iodata
 
+  @doc """
+  Executes an EXPLAIN query or similar depending on the adapter to obtains statistics of the given query.
+
+  Receives the `connection`, `query`, `params` for the query,
+  and all `opts` including those related to the EXPLAIN statement and shared opts.
+
+  Must execute the explain query and return the result.
+  """
+  @callback explain_query(connection, query :: String.t, params :: Keyword.t, opts :: Keyword.t) ::
+              {:ok, term} | {:error, Exception.t}
+
   ## DDL
 
   @doc """
@@ -109,4 +121,9 @@ defmodule Ecto.Adapters.SQL.Connection do
   Receives a query result and returns a list of logs.
   """
   @callback ddl_logs(result :: term) :: [{Logger.level, Logger.message, Logger.metadata}]
+
+  @doc """
+  Returns a queryable to check if the given `table` exists.
+  """
+  @callback table_exists_query(table :: String.t) :: {iodata, [term]}
 end

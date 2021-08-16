@@ -107,7 +107,7 @@ defmodule Gettext.PO do
     * `{:error, line, reason}` if there is an error with the contents of the
       `.po` file (for example, a syntax error)
     * `{:error, reason}` if there is an error with reading the file (this error
-      is one of the errors that can be returned by `File.read/1`)_
+      is one of the errors that can be returned by `File.read/1`)
 
   ## Examples
 
@@ -235,6 +235,7 @@ defmodule Gettext.PO do
       dump_comments(t.extracted_comments),
       dump_flags(t.flags),
       dump_references(t.references, gettext_config),
+      dump_msgctxt(t.msgctxt),
       dump_kw_and_strings("msgid", t.msgid),
       dump_kw_and_strings("msgstr", t.msgstr)
     ]
@@ -246,6 +247,7 @@ defmodule Gettext.PO do
       dump_comments(t.extracted_comments),
       dump_flags(t.flags),
       dump_references(t.references, gettext_config),
+      dump_msgctxt(t.msgctxt),
       dump_kw_and_strings("msgid", t.msgid),
       dump_kw_and_strings("msgid_plural", t.msgid_plural),
       dump_plural_msgstr(t.msgstr)
@@ -267,24 +269,38 @@ defmodule Gettext.PO do
   defp dump_references(references) do
     # This function outputs a bunch of #: comments with as many references on
     # each line as there can be under @reference_wrapping_column columns.
-    # In the flat_map_reduce, we insert newlines and comment delimiters (#:)
-    # when references wrap, building an iolist. At the end, we need to insert
-    # the first comment delimiter and the last newline.
     wrapping_column = @wrapping_column - @reference_comment_length
 
-    {iolist, _} =
-      Enum.flat_map_reduce(references, 0, fn {file, line}, line_length ->
-        ref = " #{file}:#{line}"
-        ref_length = String.length(ref)
+    references
+    |> chunk_references_by_line(wrapping_column, _line_length = 0, _chunk = [], _acc = [])
+    |> Enum.map(fn line -> ["#:", line, ?\n] end)
+  end
 
-        if ref_length + line_length > wrapping_column do
-          {[?\n, "#:", ref], ref_length}
-        else
-          {[ref], line_length + ref_length}
-        end
-      end)
+  defp chunk_references_by_line([], _wrapping_col, _line_length, _chunk_acc = [], acc) do
+    Enum.reverse(acc)
+  end
 
-    ["#:", iolist, ?\n]
+  defp chunk_references_by_line([], _wrapping_col, _line_length, _chunk_acc = chunk_acc, acc) do
+    acc = [Enum.reverse(chunk_acc) | acc]
+    Enum.reverse(acc)
+  end
+
+  defp chunk_references_by_line([{file, line} | rest], wrapping_col, line_length, chunk_acc, acc) do
+    ref = " #{file}:#{line}"
+    ref_length = String.length(ref)
+
+    cond do
+      ref_length + line_length > wrapping_col and chunk_acc == [] ->
+        chunk_references_by_line(rest, wrapping_col, 0, [ref], acc)
+
+      ref_length + line_length > wrapping_col ->
+        acc = [Enum.reverse(chunk_acc) | acc]
+        chunk_references_by_line(rest, wrapping_col, 0, [ref], acc)
+
+      true ->
+        new_line_length = line_length + ref_length
+        chunk_references_by_line(rest, wrapping_col, new_line_length, [ref | chunk_acc], acc)
+    end
   end
 
   defp dump_flags(flags) do
@@ -311,6 +327,10 @@ defmodule Gettext.PO do
     rest = Enum.map(rest, &[?", escape(&1), ?", ?\n])
     [first | rest]
   end
+
+  defp dump_msgctxt(nil), do: []
+
+  defp dump_msgctxt(string), do: dump_kw_and_strings("msgctxt", string)
 
   defp escape(str) do
     for <<char <- str>>, into: "", do: escape_char(char)

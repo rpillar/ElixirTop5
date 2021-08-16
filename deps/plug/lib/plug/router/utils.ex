@@ -2,8 +2,26 @@ defmodule Plug.Router.InvalidSpecError do
   defexception message: "invalid route specification"
 end
 
+defmodule Plug.Router.MalformedURIError do
+  defexception message: "malformed URI", plug_status: 400
+end
+
 defmodule Plug.Router.Utils do
   @moduledoc false
+
+  @doc """
+  Decodes path information for dispatching.
+  """
+  def decode_path_info!(conn) do
+    # TODO: Remove rescue as this can't fail from Elixir v1.13
+    try do
+      Enum.map(conn.path_info, &URI.decode/1)
+    rescue
+      e in ArgumentError ->
+        reason = %Plug.Router.MalformedURIError{message: e.message}
+        Plug.Conn.WrapperError.reraise(conn, :error, reason, __STACKTRACE__)
+    end
+  end
 
   @doc """
   Converts a given method to its connection representation.
@@ -84,19 +102,6 @@ defmodule Plug.Router.Utils do
   end
 
   @doc """
-  Forwards requests to another Plug at a new path.
-  """
-  def forward(%Plug.Conn{path_info: path, script_name: script} = conn, new_path, target, opts) do
-    {base, split_path} = Enum.split(path, length(path) - length(new_path))
-
-    conn = do_forward(target, %{conn | path_info: split_path, script_name: script ++ base}, opts)
-    %{conn | path_info: path, script_name: script}
-  end
-
-  defp do_forward({mod, fun}, conn, opts), do: apply(mod, fun, [conn, opts])
-  defp do_forward(mod, conn, opts), do: mod.call(conn, opts)
-
-  @doc """
   Splits the given path into several segments.
   It ignores both leading and trailing slashes in the path.
 
@@ -115,6 +120,9 @@ defmodule Plug.Router.Utils do
   def split(bin) do
     for segment <- String.split(bin, "/"), segment != "", do: segment
   end
+
+  @deprecated "Use Plug.forward/4 instead"
+  defdelegate forward(conn, new_path, target, opts), to: Plug
 
   ## Helpers
 

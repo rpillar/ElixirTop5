@@ -4,181 +4,83 @@ defmodule Credo.Check.Runner do
   # This module is responsible for running checks based on the context represented
   # by the current `Credo.Execution`.
 
+  alias Credo.Check.Params
   alias Credo.CLI.Output.UI
   alias Credo.Execution
-  alias Credo.Execution.ExecutionIssues
   alias Credo.Execution.ExecutionTiming
-  alias Credo.SourceFile
 
   @doc """
   Runs all checks on all source files (according to the config).
   """
   def run(source_files, exec) when is_list(source_files) do
-    checks =
+    check_tuples =
       exec
       |> Execution.checks()
       |> warn_about_ineffective_patterns(exec)
+      |> fix_deprecated_notation_for_checks_without_params()
 
-    {run_on_all_checks, other_checks} = Enum.split_with(checks, &run_on_all_check?/1)
-
-    run_on_all_checks
-    |> Enum.map(&Task.async(fn -> run_check_on_source_files(&1, source_files, exec) end))
-    |> Enum.each(&Task.await(&1, :infinity))
-
-    source_files
-    |> Enum.map(&Task.async(fn -> run_checks_and_append_issues(&1, exec, other_checks) end))
-    |> Enum.each(&Task.await(&1, :infinity))
+    Credo.Check.Worker.run(check_tuples, exec.max_concurrent_check_runs, fn check_tuple ->
+      run_check(exec, check_tuple)
+    end)
 
     :ok
   end
 
-  defp run_on_all_check?({check}), do: check.run_on_all?
-  defp run_on_all_check?({check, _params}), do: check.run_on_all?
-
-  defp run_checks_and_append_issues(%SourceFile{} = source_file, exec, checks) do
-    case run_checks_individually(source_file, checks, exec) do
-      [] ->
-        nil
-
-      list ->
-        Enum.each(list, &append_issues_and_timings(exec, source_file, &1))
-    end
-
-    :ok
+  defp run_check(%Execution{debug: true} = exec, {check, params}) do
+    ExecutionTiming.run(&do_run_check/2, [exec, {check, params}])
+    |> ExecutionTiming.append(exec, task: exec.current_task, check: check)
   end
 
-  defp append_issues_and_timings(exec, source_file, {issues, nil}) do
-    ExecutionIssues.append(exec, source_file, issues)
+  defp run_check(exec, {check, params}) do
+    do_run_check(exec, {check, params})
   end
 
-  defp append_issues_and_timings(exec, source_file, {issues, {check, filename, started_at, time}}) do
-    ExecutionIssues.append(exec, source_file, issues)
+  defp do_run_check(exec, {check, params}) do
+    rerun_files_that_changed = Params.get_rerun_files_that_changed(params)
 
-    ExecutionTiming.append(
-      exec,
-      [task: exec.current_task, check: check, source_file: filename],
-      started_at,
-      time
-    )
-  end
+    files_included = Params.files_included(params, check)
+    files_excluded = Params.files_excluded(params, check)
 
-  defp append_issues_and_timings(exec, source_file, {issues, {check, started_at, time}}) do
-    ExecutionIssues.append(exec, source_file, issues)
+    found_relevant_files =
+      if files_included == [] and files_excluded == [] do
+        []
+      else
+        exec
+        |> Execution.get_path()
+        |> Credo.Sources.find_in_dir(files_included, files_excluded)
+      end
 
-    ExecutionTiming.append(exec, [task: exec.current_task, check: check], started_at, time)
-  end
+    source_files =
+      exec
+      |> Execution.get_source_files()
+      |> filter_source_files(rerun_files_that_changed)
+      |> filter_source_files(found_relevant_files)
 
-  @doc false
-  def run_config_comment_finder(source_files, exec) do
-    case run_check_on_source_files({Credo.Check.ConfigCommentFinder}, source_files, exec) do
-      {issues, nil} ->
-        Enum.into(issues, %{})
-
-      {issues, {check, started_at, time}} ->
-        ExecutionTiming.append(
-          exec,
-          [task: exec.current_task, check: check, alias: "ConfigCommentFinder"],
-          started_at,
-          time
-        )
-
-        Enum.into(issues, %{})
-    end
-  end
-
-  #
-  # Run a single check on a list of source files
-  #
-
-  defp run_check_on_source_files({_check, false}, _source_files, _exec), do: []
-
-  defp run_check_on_source_files({check}, source_files, exec) do
-    run_check_on_source_files({check, []}, source_files, exec)
-  end
-
-  defp run_check_on_source_files(
-         {check, params},
-         source_files,
-         %Credo.Execution{debug: true} = exec
-       ) do
-    {started_at, time, issues} =
-      ExecutionTiming.run(fn ->
-        do_run_check_on_source_files({check, params}, source_files, exec)
-      end)
-
-    {issues, {check, started_at, time}}
-  end
-
-  defp run_check_on_source_files({check, params}, source_files, exec) do
-    issues = do_run_check_on_source_files({check, params}, source_files, exec)
-
-    {issues, nil}
-  end
-
-  defp do_run_check_on_source_files({check, params}, source_files, exec) do
     try do
-      check.run(source_files, exec, params)
+      check.run_on_all_source_files(exec, source_files, params)
     rescue
       error ->
         warn_about_failed_run(check, source_files)
 
         if exec.crash_on_error do
-          reraise error, System.stacktrace()
+          reraise error, __STACKTRACE__
         else
           []
         end
     end
   end
 
-  #
-  # Run a single check on a single source file
-  #
-
-  defp run_checks_individually(%SourceFile{} = source_file, checks, exec) do
-    Enum.map(checks, &run_check_on_single_source_file(&1, source_file, exec))
+  defp filter_source_files(source_files, []) do
+    source_files
   end
 
-  defp run_check_on_single_source_file({check}, source_file, exec) do
-    run_check_on_single_source_file({check, []}, source_file, exec)
+  defp filter_source_files(source_files, files_included) do
+    Enum.filter(source_files, fn source_file ->
+      Enum.member?(files_included, Path.expand(source_file.filename))
+    end)
   end
 
-  defp run_check_on_single_source_file({_check, false}, _source_file, _exec), do: []
-
-  defp run_check_on_single_source_file(
-         {check, params},
-         source_file,
-         %Credo.Execution{debug: true} = exec
-       ) do
-    {started_at, time, issues} =
-      ExecutionTiming.run(fn ->
-        do_run_check_on_single_source_file({check, params}, source_file, exec)
-      end)
-
-    {issues, {check, source_file.filename, started_at, time}}
-  end
-
-  defp run_check_on_single_source_file({check, params}, source_file, exec) do
-    issues = do_run_check_on_single_source_file({check, params}, source_file, exec)
-
-    {issues, nil}
-  end
-
-  defp do_run_check_on_single_source_file({check, params}, source_file, exec) do
-    try do
-      check.run(source_file, params)
-    rescue
-      error ->
-        warn_about_failed_run(check, source_file)
-
-        if exec.crash_on_error do
-          reraise error, System.stacktrace()
-        else
-          []
-        end
-    end
-  end
-
-  defp warn_about_failed_run(check, %SourceFile{} = source_file) do
+  defp warn_about_failed_run(check, %Credo.SourceFile{} = source_file) do
     UI.warn("Error while running #{check} on #{source_file.filename}")
   end
 
@@ -186,17 +88,11 @@ defmodule Credo.Check.Runner do
     UI.warn("Error while running #{check}")
   end
 
-  defp warn_about_ineffective_patterns(
-         {checks, [], _ignored_checks},
-         %Execution{only_checks: [_ | _] = only_checks}
-       ) do
-    UI.warn([
-      :red,
-      "A pattern was given to filter checks, but it did not match any: ",
-      inspect(only_checks)
-    ])
-
-    checks
+  defp fix_deprecated_notation_for_checks_without_params(checks) do
+    Enum.map(checks, fn
+      {check} -> {check, []}
+      {check, params} -> {check, params}
+    end)
   end
 
   defp warn_about_ineffective_patterns(

@@ -22,7 +22,7 @@ defmodule Phoenix.HTML.Engine do
   def encode_to_iodata!(body) when is_binary(body), do: Plug.HTML.html_escape(body)
   def encode_to_iodata!(other), do: Phoenix.HTML.Safe.to_iodata(other)
 
-  @impl true
+  @doc false
   def init(_opts) do
     %{
       iodata: [],
@@ -31,30 +31,35 @@ defmodule Phoenix.HTML.Engine do
     }
   end
 
-  @impl true
+  @doc false
   def handle_begin(state) do
     %{state | iodata: [], dynamic: []}
   end
 
-  @impl true
+  @doc false
   def handle_end(quoted) do
     handle_body(quoted)
   end
 
-  @impl true
+  @doc false
   def handle_body(state) do
     %{iodata: iodata, dynamic: dynamic} = state
     safe = {:safe, Enum.reverse(iodata)}
     {:__block__, [], Enum.reverse([safe | dynamic])}
   end
 
-  @impl true
+  @doc false
   def handle_text(state, text) do
+    handle_text(state, [], text)
+  end
+
+  @doc false
+  def handle_text(state, _meta, text) do
     %{iodata: iodata} = state
     %{state | iodata: [text | iodata]}
   end
 
-  @impl true
+  @doc false
   def handle_expr(state, "=", ast) do
     ast = traverse(ast)
     %{iodata: iodata, dynamic: dynamic, vars_count: vars_count} = state
@@ -79,8 +84,8 @@ defmodule Phoenix.HTML.Engine do
     to_safe(ast, line_from_expr(ast))
   end
 
-  defp line_from_expr({_, meta, _}) when is_list(meta), do: Keyword.get(meta, :line)
-  defp line_from_expr(_), do: nil
+  defp line_from_expr({_, meta, _}) when is_list(meta), do: Keyword.get(meta, :line, 0)
+  defp line_from_expr(_), do: 0
 
   # We can do the work at compile time
   defp to_safe(literal, _line) when is_binary(literal) or is_atom(literal) or is_number(literal) do
@@ -92,18 +97,19 @@ defmodule Phoenix.HTML.Engine do
     quote line: line, do: Phoenix.HTML.Safe.List.to_iodata(unquote(literal))
   end
 
-  # We need to check at runtime and we do so by
-  # optimizing common cases.
+  # We need to check at runtime and we do so by optimizing common cases.
   defp to_safe(expr, line) do
-    # Keep stacktraces for protocol dispatch...
-    fallback = quote line: line, do: Phoenix.HTML.Safe.to_iodata(other)
+    # Keep stacktraces for protocol dispatch and coverage
+    safe_return = quote line: line, do: data
+    bin_return = quote line: line, do: Plug.HTML.html_escape_to_iodata(bin)
+    other_return = quote line: line, do: Phoenix.HTML.Safe.to_iodata(other)
 
     # However ignore them for the generated clauses to avoid warnings
     quote @anno do
       case unquote(expr) do
-        {:safe, data} -> data
-        bin when is_binary(bin) -> Plug.HTML.html_escape_to_iodata(bin)
-        other -> unquote(fallback)
+        {:safe, data} -> unquote(safe_return)
+        bin when is_binary(bin) -> unquote(bin_return)
+        other -> unquote(other_return)
       end
     end
   end
@@ -129,15 +135,38 @@ defmodule Phoenix.HTML.Engine do
         val
 
       :error ->
-        raise ArgumentError, """
-        assign @#{key} not available in eex template.
+        deprecated_fallback(key, assigns) ||
+          raise ArgumentError, """
+          assign @#{key} not available in eex template.
 
-        Please make sure all proper assigns have been set. If this
-        is a child template, ensure assigns are given explicitly by
-        the parent template as they are not automatically forwarded.
+          Please make sure all proper assigns have been set. If this
+          is a child template, ensure assigns are given explicitly by
+          the parent template as they are not automatically forwarded.
 
-        Available assigns: #{inspect(Enum.map(assigns, &elem(&1, 0)))}
-        """
+          Available assigns: #{inspect(Enum.map(assigns, &elem(&1, 0)))}
+          """
     end
   end
+
+  defp deprecated_fallback(:view_module, %{conn: %{private: %{phoenix_view: view_module}}}) do
+    IO.warn """
+    using @view_module is deprecated, please use view_module(conn) instead.
+
+    If using render(@view_module, @view_template, assigns), replace it by @inner_content.
+    """
+
+    view_module
+  end
+
+  defp deprecated_fallback(:view_template, %{conn: %{private: %{phoenix_template: view_template}}}) do
+    IO.warn """
+    using @view_template is deprecated, please use view_template(conn) instead.
+
+    If using render(@view_module, @view_template, assigns), replace it by @inner_content.
+    """
+
+    view_template
+  end
+
+  defp deprecated_fallback(_, _), do: nil
 end

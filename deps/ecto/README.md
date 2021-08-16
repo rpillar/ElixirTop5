@@ -2,7 +2,7 @@
 
 ---
 
-[![Build Status](https://travis-ci.org/elixir-ecto/ecto.svg?branch=master)](https://travis-ci.org/elixir-ecto/ecto)
+[![Build Status](https://github.com/elixir-ecto/ecto/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto/actions) [![Hex.pm](https://img.shields.io/hexpm/v/ecto.svg)](https://hex.pm/packages/ecto)
 
 Ecto is a toolkit for data mapping and language integrated query for Elixir. Here is an example:
 
@@ -58,33 +58,33 @@ defmodule Sample.App do
 end
 ```
 
-Ecto is commonly used to interact with databases, such as Postgres and MySQL via [Ecto.Adapters.SQL](http://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, regardless if they are backed by a database or not.
+Ecto is commonly used to interact with databases, such as Postgres and MySQL via [Ecto.Adapters.SQL](http://hexdocs.pm/ecto_sql) ([source code](https://github.com/elixir-ecto/ecto_sql)). Ecto is also commonly used to map data from any source into Elixir structs, whether they are backed by a database or not.
 
-See the [getting started guide](http://hexdocs.pm/ecto/getting-started.html) and the [online documentation](http://hexdocs.pm/ecto).
+See the [getting started guide](http://hexdocs.pm/ecto/getting-started.html) and the [online documentation](http://hexdocs.pm/ecto) for more information. Other resources available are:
 
-Also checkout the ["What's new in Ecto 2.1"](http://pages.plataformatec.com.br/ebook-whats-new-in-ecto-2-0) free ebook to learn more about many features since Ecto 2.1 such as `many_to_many`, schemaless queries, concurrent testing, upsert and more. Note the book still largely applies to Ecto 3.0 as the major change in Ecto 3.0 was the split of Ecto in two repositories (`ecto` and `ecto_sql`) and the removal of the outdated Ecto datetime types in favor of Elixir's Calendar types.
+  * [Programming Ecto](https://pragprog.com/book/wmecto/programming-ecto), by Darin Wilson and Eric Meadows-Jönsson, which guides you from fundamentals up to advanced concepts
+
+  * [The Little Ecto Cookbook](https://dashbit.co/ebooks/the-little-ecto-cookbook), a free ebook by Dashbit, which is a curation of the existing Ecto guides with some extra contents
 
 ## Usage
 
 You need to add both Ecto and the database adapter as a dependency to your `mix.exs` file. The supported databases and their adapters are:
 
-Database   | Ecto Adapter           | Dependencies                                    | Ecto 3.0 compatible?
-:----------| :--------------------- | :-----------------------------------------------| :----
-PostgreSQL | Ecto.Adapters.Postgres | [ecto_sql][ecto_sql] + [postgrex][postgrex]     | Yes
-MySQL      | Ecto.Adapters.MyXQL    | [ecto_sql][ecto_sql] + [myxql][myxql]           | Yes
-MSSQL      | MssqlEcto              | [ecto_sql][ecto_sql] + [mssql_ecto][mssql_ecto] | No
-MSSQL      | Tds.Ecto               | [ecto_sql][ecto_sql] + [tds_ecto][tds_ecto]     | No
-SQLite     | Sqlite.Ecto2           | [ecto][ecto] + [sqlite_ecto2][sqlite_ecto2]     | No
-Mnesia     | EctoMnesia.Adapter     | [ecto][ecto] + [ecto_mnesia][ecto_mnesia]       | No
+Database   | Ecto Adapter           | Dependencies
+:----------| :--------------------- | :-----------------------------------------------
+PostgreSQL | Ecto.Adapters.Postgres | [ecto_sql][ecto_sql] (requires Ecto v3.0+) + [postgrex][postgrex]
+MySQL      | Ecto.Adapters.MyXQL    | [ecto_sql][ecto_sql] (requires Ecto v3.3+) + [myxql][myxql]
+MSSQL      | Ecto.Adapters.Tds      | [ecto_sql][ecto_sql] (requires Ecto v3.4+) + [tds][tds]
+SQLite3    | Ecto.Adapters.SQLite3  | [ecto_sql][ecto_sql] (requires Ecto v3.5+) + [ecto_sqlite3][ecto_sqlite3]
+ETS        | Etso                   | [ecto][ecto] + [etso][etso]
 
 [ecto]: http://github.com/elixir-ecto/ecto
 [ecto_sql]: http://github.com/elixir-ecto/ecto_sql
 [postgrex]: http://github.com/elixir-ecto/postgrex
 [myxql]: http://github.com/elixir-ecto/myxql
-[mssql_ecto]: https://github.com/findmypast-oss/mssql_ecto
-[tds_ecto]: https://github.com/livehelpnow/tds_ecto
-[sqlite_ecto2]: https://github.com/scouten/sqlite_ecto2
-[ecto_mnesia]: https://github.com/Nebo15/ecto_mnesia
+[tds]: https://github.com/livehelpnow/tds
+[ecto_sqlite3]: https://github.com/elixir-sqlite/ecto_sqlite3
+[etso]: https://github.com/evadne/etso
 
 For example, if you want to use PostgreSQL, add to your `mix.exs` file:
 
@@ -113,14 +113,17 @@ defmodule MyApp.Repo do
 
 | Branch | Support                  |
 | ------ | ------------------------ |
-| v3.0   | Bug fixes                |
+| v3.3   | Bug fixes                |
+| v3.2   | Security patches only    |
+| v3.1   | Unsupported from 02/2020 |
+| v3.0   | Unsupported from 02/2020 |
 | v2.2   | Security patches only    |
 | v2.1   | Unsupported from 10/2018 |
 | v2.0   | Unsupported from 08/2017 |
 | v1.1   | Unsupported from 03/2018 |
 | v1.0   | Unsupported from 05/2017 |
 
-With the version 3.0, Ecto has become API stable. This means no more new features, although we will continue providing bug fixes and updates. For everyone running Ecto in production, rest assured that Ecto will continue to be a well maintained project with the same production quality and polish that our users are familiar with.
+With the version 3.0, Ecto has become API stable. This means our main focus is on providing bug fixes and updates.
 
 ## Important links
 
@@ -128,7 +131,7 @@ With the version 3.0, Ecto has become API stable. This means no more new feature
   * [Mailing list](https://groups.google.com/forum/#!forum/elixir-ecto)
   * [Examples](https://github.com/elixir-ecto/ecto/tree/master/examples)
 
-### Running tests
+## Running tests
 
 Clone the repo and fetch its dependencies:
 
@@ -137,17 +140,40 @@ Clone the repo and fetch its dependencies:
     $ mix deps.get
     $ mix test
 
-Note that `mix test` does not run the tests in `integration_test` folder, because Ecto does not ship with any adapters to run them against. Adapter libraries like `ecto_sql` can run these tests as part of their suites.
+Note that `mix test` does not run the tests in the `integration_test` folder. To run integration tests, you can clone `ecto_sql` in a sibling directory and then run its integration tests with the `ECTO_PATH` environment variable pointing to your Ecto checkout:
 
-## Copyright and License
+    $ cd ..
+    $ git clone https://github.com/elixir-ecto/ecto_sql.git
+    $ cd ecto_sql
+    $ mix deps.get
+    $ ECTO_PATH=../ecto mix test.all
 
-"Ecto" and the Ecto logo are Copyright (c) 2012 Plataformatec.
+### Running containerized tests
+
+It is also possible to run the integration tests under a containerized environment using [earthly](https://earthly.dev/get-earthly):
+
+    $ earthly -P +all
+
+You can also use this to interactively debug any failing integration tests using:
+
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 +integration-test
+
+Then once you enter the containerized shell, you can inspect the underlying databases with the respective commands:
+
+    PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres ecto_test
+    MYSQL_PASSWORD=root mysql -h 127.0.0.1 -uroot -proot ecto_test
+    sqlcmd -U sa -P 'some!Password'
+
+## Logo
+
+"Ecto" and the Ecto logo are Copyright (c) 2020 Dashbit.
 
 The Ecto logo was designed by [Dane Wesolko](http://www.danewesolko.com).
 
-The source code is under the Apache 2 License.
+## License
 
-Copyright (c) 2012 Plataformatec
+Copyright (c) 2013 Plataformatec \
+Copyright (c) 2020 Dashbit
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

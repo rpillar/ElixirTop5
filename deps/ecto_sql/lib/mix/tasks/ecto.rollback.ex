@@ -14,14 +14,14 @@ defmodule Mix.Tasks.Ecto.Rollback do
     all: :boolean,
     step: :integer,
     to: :integer,
-    start: :boolean,
     quiet: :boolean,
     prefix: :string,
     pool_size: :integer,
     log_sql: :boolean,
     repo: [:keep, :string],
     no_compile: :boolean,
-    no_deps_check: :boolean
+    no_deps_check: :boolean,
+    migrations_path: :keep
   ]
 
   @moduledoc """
@@ -40,11 +40,10 @@ defmodule Mix.Tasks.Ecto.Rollback do
 
       config :my_app, MyApp.Repo, priv: "priv/custom_repo"
 
-  This task runs all pending migrations by default. Runs the last
-  applied migration by default. To roll back to a version number,
-  supply `--to version_number`. To roll back a specific number of
-  times, use `--step n`. To undo all applied migrations, provide
-  `--all`.
+  This task rolls back the last applied migration by default. To roll
+  back to a version number, supply `--to version_number`. To roll
+  back a specific number of times, use `--step n`. To undo all applied
+  migrations, provide `--all`.
 
   The repositories to rollback are the ones specified under the
   `:ecto_repos` option in the current app configuration. However,
@@ -66,16 +65,32 @@ defmodule Mix.Tasks.Ecto.Rollback do
   ## Command line options
 
     * `-r`, `--repo` - the repo to rollback
-    * `--all` - revert all applied migrations
-    * `--step` / `-n` - revert n number of applied migrations
-    * `--to` - revert all migrations down to and including version
-    * `--quiet` - do not log migration commands
-    * `--prefix` - the prefix to run migrations on
-    * `--pool-size` - the pool size if the repository is started only for the task (defaults to 1)
-    * `--log-sql` - log the raw sql migrations are running
-    * `--no-compile` - does not compile applications before rolling back
-    * `--no-deps-check` - does not check depedendencies before rolling back
 
+    * `--all` - revert all applied migrations
+
+    * `--step`, `-n` - revert n number of applied migrations
+
+    * `--to` - revert all migrations down to and including version
+
+    * `--quiet` - do not log migration commands
+
+    * `--prefix` - the prefix to run migrations on
+
+    * `--pool-size` - the pool size if the repository is started only for the task (defaults to 2)
+
+    * `--log-sql` - log the raw sql migrations are running
+
+    * `--no-compile` - does not compile applications before rolling back
+
+    * `--no-deps-check` - does not check dependencies before rolling back
+
+    * `--migrations-path` - the path to load the migrations from, defaults to
+      `"priv/repo/migrations"`. This option may be given multiple times in which case the migrations
+      are loaded from all the given directories and sorted as if they were all in the same one.
+
+      Note, if you have migrations paths e.g. `a/` and `b/`, and run
+      `mix ecto.rollback --migrations-path a/`, only the latest migrations from `a/` will be
+      rolled back (even if `b/` contains the overall latest migrations.)
   """
 
   @impl true
@@ -93,21 +108,28 @@ defmodule Mix.Tasks.Ecto.Rollback do
         do: Keyword.merge(opts, [log: false, log_sql: false]),
         else: opts
 
-    Enum.each repos, fn repo ->
-      ensure_repo(repo, args)
-      path = ensure_migrations_path(repo)
-      {:ok, pid, apps} = ensure_started(repo, opts)
+    # Start ecto_sql explicitly before as we don't need
+    # to restart those apps if migrated.
+    {:ok, _} = Application.ensure_all_started(:ecto_sql)
 
+    for repo <- repos do
+      ensure_repo(repo, args)
+      paths = ensure_migrations_paths(repo, opts)
       pool = repo.config[:pool]
-      migrated =
-        if function_exported?(pool, :unboxed_run, 2) do
-          pool.unboxed_run(repo, fn -> migrator.(repo, path, :down, opts) end)
+
+      fun =
+        if Code.ensure_loaded?(pool) and function_exported?(pool, :unboxed_run, 2) do
+          &pool.unboxed_run(&1, fn -> migrator.(&1, paths, :down, opts) end)
         else
-          migrator.(repo, path, :down, opts)
+          &migrator.(&1, paths, :down, opts)
         end
 
-      pid && repo.stop()
-      restart_apps_if_migrated(apps, migrated)
+      case Ecto.Migrator.with_repo(repo, fun, [mode: :temporary] ++ opts) do
+        {:ok, _migrated, _apps} -> :ok
+        {:error, error} -> Mix.raise "Could not start repo #{inspect repo}, error: #{inspect error}"
+      end
     end
+
+    :ok
   end
 end

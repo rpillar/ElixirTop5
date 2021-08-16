@@ -38,7 +38,7 @@ defmodule Ecto.Integration.AlterTest do
   import Ecto.Query, only: [from: 1, from: 2]
 
   defp run(direction, repo, module) do
-    Ecto.Migration.Runner.run(repo, 1, module, :forward, direction, direction, log: false)
+    Ecto.Migration.Runner.run(repo, repo.config(), 1, module, :forward, direction, direction, log: false)
   end
 
   test "reset cache on returning query after alter column type" do
@@ -70,7 +70,7 @@ defmodule Ecto.Integration.AlterTest do
     assert :ok == run(:down, PoolRepo, AlterMigrationOne)
   end
 
-  test "reset cache on parameterised query after alter column type" do
+  test "reset cache on parameterized query after alter column type" do
     values = from v in "alter_col_type"
 
     assert :ok == run(:up, PoolRepo, AlterMigrationOne)

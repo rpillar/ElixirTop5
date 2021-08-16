@@ -1,6 +1,6 @@
 # Gettext
 
-[![Build Status](https://travis-ci.org/elixir-lang/gettext.svg)](https://travis-ci.org/elixir-lang/gettext)
+![](https://github.com/elixir-gettext/gettext/workflows/CI/badge.svg)
 
 Gettext is an **internationalization** (i18n) and **localization** (l10n) system commonly used for writing multilingual programs. Gettext is a standard for i18n in different communities, meaning there is a great set of tooling for developers and translators. This project is an implementation of the Gettext system in Elixir.
 
@@ -10,7 +10,9 @@ Gettext is an **internationalization** (i18n) and **localization** (l10n) system
 
      ```elixir
      def deps do
-       [{:gettext, ">= 0.0.0"}]
+       [
+         {:gettext, ">= 0.0.0"}
+       ]
      end
      ```
 
@@ -18,7 +20,9 @@ Gettext is an **internationalization** (i18n) and **localization** (l10n) system
 
      ```elixir
      def project do
-       [compilers: [:gettext] ++ Mix.compilers()]
+       [
+         compilers: [:gettext] ++ Mix.compilers()
+       ]
      end
      ```
 
@@ -66,7 +70,7 @@ msgstr[1] "Aqui estão os textos para traduzir"
 
 `.po` are text-based files and can be edited directly by translators. Some may even use existing tools for managing them, such as [Poedit][poedit] or [poeditor.com][poeditor.com].
 
-Finally, because translations are based on strings, your source code does not lose readability as you still see literal strings, like `gettext "here is an example"`, instead of paths like `translate "some.path.convention"`.
+Finally, because translations are based on strings, your source code does not lose readability as you still see literal strings, like `gettext("here is an example")`, instead of paths like `translate("some.path.convention")`.
 
 Read the [documentation for the `Gettext` module][docs-gettext-module] for more information on locales, interpolation, pluralization, and other features.
 

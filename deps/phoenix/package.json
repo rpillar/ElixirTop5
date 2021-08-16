@@ -1,6 +1,6 @@
 {
   "name": "phoenix",
-  "version": "1.4.3",
+  "version": "1.5.10",
   "description": "The official JavaScript client for the Phoenix web framework.",
   "license": "MIT",
   "main": "./priv/static/phoenix.js",
@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git://github.com/phoenixframework/phoenix.git"
   },
-  "author": "Chris McCord <chris@chrismccord.com> (http://www.phoenixframework.org)",
+  "author": "Chris McCord <chris@chrismccord.com> (https://www.phoenixframework.org)",
   "files": [
     "README.md",
     "LICENSE.md",

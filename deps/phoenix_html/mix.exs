@@ -2,7 +2,7 @@ defmodule PhoenixHtml.Mixfile do
   use Mix.Project
 
   # Also change package.json version
-  @version "2.13.2"
+  @version "2.14.3"
 
   def project do
     [
@@ -22,13 +22,15 @@ defmodule PhoenixHtml.Mixfile do
   end
 
   def application do
-    [applications: [:logger, :plug]]
+    [
+      extra_applications: [:eex, :logger]
+    ]
   end
 
   defp deps do
     [
       {:plug, "~> 1.5"},
-      {:ex_doc, "~> 0.18", only: :docs}
+      {:ex_doc, ">= 0.0.0", only: :docs}
     ]
   end
 

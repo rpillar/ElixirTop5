@@ -15,7 +15,7 @@ config :top5_2, Top52Web.Endpoint,
   url: [host: "localhost"],
   secret_key_base: "AKnJ5EfWd599CMLJRiAuTggbjbSCTPmEnvkL/8M0wRtmilbHZYd6RhlyB+nAw7dS",
   render_errors: [view: Top52Web.ErrorView, accepts: ~w(html json)],
-  pubsub: [name: Top52.PubSub, adapter: Phoenix.PubSub.PG2]
+  pubsub_server: Top52.PubSub
 
 # Configures Elixir's Logger
 config :logger, :console,

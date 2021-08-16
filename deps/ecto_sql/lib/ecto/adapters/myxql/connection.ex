@@ -1,6 +1,8 @@
 if Code.ensure_loaded?(MyXQL) do
   defmodule Ecto.Adapters.MyXQL.Connection do
     @moduledoc false
+    alias Ecto.Adapters.SQL
+
     @behaviour Ecto.Adapters.SQL.Connection
 
     ## Connection
@@ -24,16 +26,10 @@ if Code.ensure_loaded?(MyXQL) do
     end
 
     @impl true
-    def execute(conn, %{ref: ref} = query, params, opts) do
+    def execute(conn, query, params, opts) do
       case MyXQL.execute(conn, query, params, opts) do
-        {:ok, %{ref: ^ref}, result} ->
-          {:ok, result}
-
-        {:ok, _, _} = ok ->
-          ok
-
-        {:error, _} = error ->
-          error
+        {:ok, _, result} -> {:ok, result}
+        {:error, _} = error -> error
       end
     end
 
@@ -43,20 +39,20 @@ if Code.ensure_loaded?(MyXQL) do
     end
 
     @impl true
-    def to_constraints(%MyXQL.Error{mysql: %{name: :ER_DUP_ENTRY}, message: message}) do
+    def to_constraints(%MyXQL.Error{mysql: %{name: :ER_DUP_ENTRY}, message: message}, opts) do
       case :binary.split(message, " for key ") do
-        [_, quoted] -> [unique: strip_quotes(quoted)]
+        [_, quoted] -> [unique: normalize_index_name(quoted, opts[:source])]
         _ -> []
       end
     end
-    def to_constraints(%MyXQL.Error{mysql: %{name: name}, message: message})
+    def to_constraints(%MyXQL.Error{mysql: %{name: name}, message: message}, _opts)
         when name in [:ER_ROW_IS_REFERENCED_2, :ER_NO_REFERENCED_ROW_2] do
       case :binary.split(message, [" CONSTRAINT ", " FOREIGN KEY "], [:global]) do
         [_, quoted, _] -> [foreign_key: strip_quotes(quoted)]
         _ -> []
       end
     end
-    def to_constraints(_),
+    def to_constraints(_, _),
       do: []
 
     defp strip_quotes(quoted) do
@@ -65,14 +61,26 @@ if Code.ensure_loaded?(MyXQL) do
       unquoted
     end
 
+    defp normalize_index_name(quoted, source) do
+      name = strip_quotes(quoted)
+
+      if source do
+        String.trim_leading(name, "#{source}.")
+      else
+        name
+      end
+    end
+
     ## Query
 
-    alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr}
+    @parent_as __MODULE__
+    alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr, WithExpr}
 
     @impl true
-    def all(query) do
-      sources = create_names(query)
+    def all(query, as_prefix \\ []) do
+      sources = create_names(query, as_prefix)
 
+      cte = cte(query, sources)
       from = from(query, sources)
       select = select(query, sources)
       join = join(query, sources)
@@ -84,9 +92,9 @@ if Code.ensure_loaded?(MyXQL) do
       order_by = order_by(query, sources)
       limit = limit(query, sources)
       offset = offset(query, sources)
-      lock = lock(query.lock)
+      lock = lock(query, sources)
 
-      [select, from, join, where, group_by, having, window, combinations, order_by, limit, offset | lock]
+      [cte, select, from, join, where, group_by, having, window, combinations, order_by, limit, offset | lock]
     end
 
     @impl true
@@ -97,7 +105,8 @@ if Code.ensure_loaded?(MyXQL) do
         error!(nil, ":select is not supported in update_all by MySQL")
       end
 
-      sources = create_names(query)
+      sources = create_names(query, [])
+      cte = cte(query, sources)
       {from, name} = get_source(query, sources, 0, source)
 
       fields = if prefix do
@@ -110,7 +119,7 @@ if Code.ensure_loaded?(MyXQL) do
       prefix = prefix || ["UPDATE ", from, " AS ", name, join, " SET "]
       where  = where(%{query | wheres: wheres ++ query.wheres}, sources)
 
-      [prefix, fields | where]
+      [cte, prefix, fields | where]
     end
 
     @impl true
@@ -119,24 +128,28 @@ if Code.ensure_loaded?(MyXQL) do
         error!(nil, ":select is not supported in delete_all by MySQL")
       end
 
-      sources = create_names(query)
+      sources = create_names(query, [])
+      cte = cte(query, sources)
       {_, name, _} = elem(sources, 0)
 
       from   = from(query, sources)
       join   = join(query, sources)
       where  = where(query, sources)
 
-      ["DELETE ", name, ".*", from, join | where]
+      [cte, "DELETE ", name, ".*", from, join | where]
     end
 
     @impl true
-    def insert(prefix, table, header, rows, on_conflict, []) do
-      fields = intersperse_map(header, ?,, &quote_name/1)
-      ["INSERT INTO ", quote_table(prefix, table), " (", fields, ") VALUES ",
+    def insert(prefix, table, header, rows, on_conflict, [], []) do
+      fields = quote_names(header)
+      ["INSERT INTO ", quote_table(prefix, table), " (", fields, ") ",
        insert_all(rows) | on_conflict(on_conflict, header)]
     end
-    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning) do
+    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning, []) do
       error!(nil, ":returning is not supported in insert/insert_all by MySQL")
+    end
+    def insert(_prefix, _table, _header, _rows, _on_conflict, _returning, _placeholders) do
+      error!(nil, ":placeholders is not supported by MySQL")
     end
 
     defp on_conflict({_, _, [_ | _]}, _header) do
@@ -163,10 +176,14 @@ if Code.ensure_loaded?(MyXQL) do
       error!(nil, "Using a query with :where in combination with the :on_conflict option is not supported by MySQL")
     end
 
-    defp insert_all(rows) do
-      intersperse_map(rows, ?,, fn row ->
+    defp insert_all(rows) when is_list(rows) do
+      ["VALUES ", intersperse_map(rows, ?,, fn row ->
         [?(, intersperse_map(row, ?,, &insert_all_value/1), ?)]
-      end)
+      end)]
+    end
+
+    defp insert_all(%Ecto.Query{} = query) do
+      [?(, all(query), ?)]
     end
 
     defp insert_all_value(nil), do: "DEFAULT"
@@ -198,6 +215,24 @@ if Code.ensure_loaded?(MyXQL) do
       ["DELETE FROM ", quote_table(prefix, table), " WHERE " | filters]
     end
 
+    @impl true
+    # DB explain opts are deprecated, so they aren't used to build the explain query.
+    # See Notes at https://dev.mysql.com/doc/refman/5.7/en/explain.html
+    def explain_query(conn, query, params, opts) do
+      case query(conn, build_explain_query(query), params, opts) do
+        {:ok, %MyXQL.Result{} = result} ->
+          {:ok, SQL.format_table(result)}
+
+        error ->
+          error
+      end
+    end
+
+    def build_explain_query(query) do
+      ["EXPLAIN ", query]
+      |> IO.iodata_to_binary()
+    end
+
     ## Query generation
 
     binary_ops =
@@ -213,8 +248,7 @@ if Code.ensure_loaded?(MyXQL) do
 
     defp handle_call(fun, _arity), do: {:fun, Atom.to_string(fun)}
 
-    defp select(%{select: %{fields: fields}, distinct: distinct} = query,
-                sources) do
+    defp select(%{select: %{fields: fields}, distinct: distinct} = query, sources) do
       ["SELECT ", distinct(distinct, sources, query) | select(fields, sources, query)]
     end
 
@@ -229,6 +263,14 @@ if Code.ensure_loaded?(MyXQL) do
       do: "TRUE"
     defp select(fields, sources, query) do
       intersperse_map(fields, ", ", fn
+        {:&, _, [idx]} ->
+          case elem(sources, idx) do
+            {source, _, nil} ->
+              error!(query, "MySQL does not support selecting all fields from #{source} without a schema. " <>
+                            "Please specify a schema or specify exactly which fields you want to select")
+            {_, source, _} ->
+              source
+          end
         {key, value} ->
           [expr(value, sources, query), " AS ", quote_name(key)]
         value ->
@@ -240,6 +282,21 @@ if Code.ensure_loaded?(MyXQL) do
       {from, name} = get_source(query, sources, 0, source)
       [" FROM ", from, " AS ", name | Enum.map(hints, &[?\s | &1])]
     end
+
+    defp cte(%{with_ctes: %WithExpr{recursive: recursive, queries: [_ | _] = queries}} = query, sources) do
+      recursive_opt = if recursive, do: "RECURSIVE ", else: ""
+      ctes = intersperse_map(queries, ", ", &cte_expr(&1, sources, query))
+      ["WITH ", recursive_opt, ctes, " "]
+    end
+
+    defp cte(%{with_ctes: _}, _), do: []
+
+    defp cte_expr({name, cte}, sources, query) do
+      [quote_name(name), " AS ", cte_query(cte, sources, query)]
+    end
+
+    defp cte_query(%Ecto.Query{} = query, _, _), do: ["(", all(query), ")"]
+    defp cte_query(%QueryExpr{expr: expr}, sources, query), do: expr(expr, sources, query)
 
     defp update_fields(type, %{updates: updates} = query, sources) do
      fields = for(%{expr: expr} <- updates,
@@ -387,8 +444,9 @@ if Code.ensure_loaded?(MyXQL) do
       end)
     end
 
-    defp lock(nil), do: []
-    defp lock(lock_clause), do: [?\s | lock_clause]
+    defp lock(%{lock: nil}, _sources), do: []
+    defp lock(%{lock: binary}, _sources) when is_binary(binary), do: [?\s | binary]
+    defp lock(%{lock: expr} = query, sources), do: [?\s | expr(expr, sources, query)]
 
     defp boolean(_name, [], _sources, _query), do: []
     defp boolean(name, [%{expr: expr, op: op} | query_exprs], sources, query) do
@@ -405,7 +463,7 @@ if Code.ensure_loaded?(MyXQL) do
     defp operator_to_boolean(:or), do: " OR "
 
     defp parens_for_select([first_expr | _] = expr) do
-      if is_binary(first_expr) and String.starts_with?(first_expr, ["SELECT", "select"]) do
+      if is_binary(first_expr) and String.match?(first_expr, ~r/^\s*select/i) do
         [?(, expr, ?)]
       else
         expr
@@ -418,6 +476,12 @@ if Code.ensure_loaded?(MyXQL) do
 
     defp expr({:^, [], [_ix]}, _sources, _query) do
       '?'
+    end
+
+    defp expr({{:., _, [{:parent_as, _, [{:&, _, [idx]}]}, field]}, _, []}, _sources, query)
+         when is_atom(field) do
+      {_, name, _} = elem(query.aliases[@parent_as], idx)
+      [name, ?. | quote_name(field)]
     end
 
     defp expr({{:., _, [{:&, _, [idx]}, field]}, _, []}, sources, _query)
@@ -449,6 +513,10 @@ if Code.ensure_loaded?(MyXQL) do
       [expr(left, sources, query), " IN (", args, ?)]
     end
 
+    defp expr({:in, _, [left, %Ecto.SubQuery{} = subquery]}, sources, query) do
+      [expr(left, sources, query), " IN ", expr(subquery, sources, query)]
+    end
+
     defp expr({:in, _, [left, right]}, sources, query) do
       [expr(left, sources, query), " = ANY(", expr(right, sources, query), ?)]
     end
@@ -465,8 +533,9 @@ if Code.ensure_loaded?(MyXQL) do
       error!(query, "MySQL adapter does not support aggregate filters")
     end
 
-    defp expr(%Ecto.SubQuery{query: query}, _sources, _query) do
-      [?(, all(query), ?)]
+    defp expr(%Ecto.SubQuery{query: query}, sources, _query) do
+      query = put_in(query.aliases[@parent_as], sources)
+      [?(, all(query, subquery_as_prefix(sources)), ?)]
     end
 
     defp expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
@@ -510,6 +579,19 @@ if Code.ensure_loaded?(MyXQL) do
     end
 
     defp expr({:count, _, []}, _sources, _query), do: "count(*)"
+
+    defp expr({:json_extract_path, _, [expr, path]}, sources, query) do
+      path =
+        Enum.map(path, fn
+          binary when is_binary(binary) ->
+            [?., ?", escape_json_key(binary), ?"]
+
+          integer when is_integer(integer) ->
+            "[#{integer}]"
+        end)
+
+      ["json_extract(", expr(expr, sources, query), ", '$", path, "')"]
+    end
 
     defp expr({fun, _, args}, sources, query) when is_atom(fun) and is_list(args) do
       {modifier, args} =
@@ -575,45 +657,50 @@ if Code.ensure_loaded?(MyXQL) do
       ["INTERVAL ", expr(count, sources, query), ?\s | interval]
     end
 
-    defp op_to_binary({op, _, [_, _]} = expr, sources, query) when op in @binary_ops do
-      paren_expr(expr, sources, query)
+    defp op_to_binary({op, _, [_, _]} = expr, sources, query) when op in @binary_ops,
+      do: paren_expr(expr, sources, query)
+
+    defp op_to_binary({:is_nil, _, [_]} = expr, sources, query),
+      do: paren_expr(expr, sources, query)
+
+    defp op_to_binary(expr, sources, query),
+      do: expr(expr, sources, query)
+
+    defp create_names(%{sources: sources}, as_prefix) do
+      create_names(sources, 0, tuple_size(sources), as_prefix) |> List.to_tuple()
     end
 
-    defp op_to_binary(expr, sources, query) do
-      expr(expr, sources, query)
+    defp create_names(sources, pos, limit, as_prefix) when pos < limit do
+      [create_name(sources, pos, as_prefix) | create_names(sources, pos + 1, limit, as_prefix)]
     end
 
-    defp create_names(%{sources: sources}) do
-      create_names(sources, 0, tuple_size(sources)) |> List.to_tuple()
+    defp create_names(_sources, pos, pos, as_prefix) do
+      [as_prefix]
     end
 
-    defp create_names(sources, pos, limit) when pos < limit do
-      [create_name(sources, pos) | create_names(sources, pos + 1, limit)]
+    defp subquery_as_prefix(sources) do
+      [?s | :erlang.element(tuple_size(sources), sources)]
     end
 
-    defp create_names(_sources, pos, pos) do
-      []
-    end
-
-    defp create_name(sources, pos) do
+    defp create_name(sources, pos, as_prefix) do
       case elem(sources, pos) do
         {:fragment, _, _} ->
-          {nil, [?f | Integer.to_string(pos)], nil}
+          {nil, as_prefix ++ [?f | Integer.to_string(pos)], nil}
 
         {table, schema, prefix} ->
-          name = [create_alias(table) | Integer.to_string(pos)]
+          name = as_prefix ++ [create_alias(table) | Integer.to_string(pos)]
           {quote_table(prefix, table), name, schema}
 
         %Ecto.SubQuery{} ->
-          {nil, [?s | Integer.to_string(pos)], nil}
+          {nil, as_prefix ++ [?s | Integer.to_string(pos)], nil}
       end
     end
 
     defp create_alias(<<first, _rest::binary>>) when first in ?a..?z when first in ?A..?Z do
-      <<first>>
+      first
     end
     defp create_alias(_) do
-      "t"
+      ?t
     end
 
     ## DDL
@@ -701,6 +788,11 @@ if Code.ensure_loaded?(MyXQL) do
     @impl true
     def ddl_logs(_), do: []
 
+    @impl true
+    def table_exists_query(table) do
+      {"SELECT true FROM information_schema.tables WHERE table_name = ? AND table_schema = DATABASE() LIMIT 1", [table]}
+    end
+
     defp pk_definitions(columns, prefix) do
       pks =
         for {_, name, _, opts} <- columns,
@@ -709,7 +801,7 @@ if Code.ensure_loaded?(MyXQL) do
 
       case pks do
         [] -> []
-        _  -> [[prefix, "PRIMARY KEY (", intersperse_map(pks, ", ", &quote_name/1), ?)]]
+        _  -> [[prefix, "PRIMARY KEY (", quote_names(pks), ?)]]
       end
     end
 
@@ -728,6 +820,10 @@ if Code.ensure_loaded?(MyXQL) do
 
     defp column_changes(table, columns) do
       intersperse_map(columns, ", ", &column_change(table, &1))
+    end
+
+    defp column_change(_table, {_command, _name, %Reference{validate: false}, _opts}) do
+      error!(nil, "validate: false on references is not supported in MyXQL")
     end
 
     defp column_change(table, {:add, name, %Reference{} = ref, opts}) do
@@ -771,8 +867,14 @@ if Code.ensure_loaded?(MyXQL) do
     defp column_options(opts) do
       default = Keyword.fetch(opts, :default)
       null    = Keyword.get(opts, :null)
-      [default_expr(default), null_expr(null)]
+      after_column = Keyword.get(opts, :after)
+
+      [default_expr(default), null_expr(null), after_expr(after_column)]
     end
+
+    defp after_expr(nil), do: []
+    defp after_expr(column) when is_atom(column) or is_binary(column), do: " AFTER `#{column}`"
+    defp after_expr(_), do: []
 
     defp null_expr(false), do: " NOT NULL"
     defp null_expr(true), do: " NULL"
@@ -786,8 +888,11 @@ if Code.ensure_loaded?(MyXQL) do
       do: [" DEFAULT ", to_string(literal)]
     defp default_expr({:ok, {:fragment, expr}}),
       do: [" DEFAULT ", expr]
-    defp default_expr({:ok, value}) when is_map(value),
-      do: error!(nil, ":default is not supported for json columns by MySQL")
+    defp default_expr({:ok, value}) when is_map(value) do
+      library = Application.get_env(:myxql, :json_library, Jason)
+      expr = IO.iodata_to_binary(library.encode_to_iodata!(value))
+      [" DEFAULT ", ?(, ?', escape_string(expr), ?', ?)]
+    end
     defp default_expr(:error),
       do: []
 
@@ -819,36 +924,37 @@ if Code.ensure_loaded?(MyXQL) do
       size      = Keyword.get(opts, :size)
       precision = Keyword.get(opts, :precision)
       scale     = Keyword.get(opts, :scale)
-      type_name = ecto_to_db(type)
 
       cond do
-        size            -> [type_name, ?(, to_string(size), ?)]
-        precision       -> [type_name, ?(, to_string(precision), ?,, to_string(scale || 0), ?)]
-        type == :string -> [type_name, "(255)"]
-        true            -> type_name
+        size -> [ecto_size_to_db(type), ?(, to_string(size), ?)]
+        precision -> [ecto_to_db(type), ?(, to_string(precision), ?,, to_string(scale || 0), ?)]
+        type == :string -> ["varchar(255)"]
+        true -> ecto_to_db(type)
       end
     end
 
-    defp constraint_expr(%Reference{} = ref, table, name),
-      do: [", ADD CONSTRAINT ", reference_name(ref, table, name),
-           " FOREIGN KEY (", quote_name(name), ?),
-           " REFERENCES ", quote_table(ref.prefix || table.prefix, ref.table),
-           ?(, quote_name(ref.column), ?),
-           reference_on_delete(ref.on_delete), reference_on_update(ref.on_update)]
+    defp reference_expr(type, ref, table, name) do
+      {current_columns, reference_columns} = Enum.unzip([{name, ref.column} | ref.with])
 
-    defp constraint_if_not_exists_expr(%Reference{} = ref, table, name),
-      do: [", ADD CONSTRAINT ", reference_name(ref, table, name),
-           " FOREIGN KEY IF NOT EXISTS (", quote_name(name), ?),
-           " REFERENCES ", quote_table(ref.prefix || table.prefix, ref.table),
-           ?(, quote_name(ref.column), ?),
-           reference_on_delete(ref.on_delete), reference_on_update(ref.on_update)]
+      if ref.match do
+        error!(nil, ":match is not supported in references for tds")
+      end
+
+      ["CONSTRAINT ", reference_name(ref, table, name),
+       " ", type, " (", quote_names(current_columns), ?),
+       " REFERENCES ", quote_table(ref.prefix || table.prefix, ref.table),
+       ?(, quote_names(reference_columns), ?),
+       reference_on_delete(ref.on_delete), reference_on_update(ref.on_update)]
+    end
 
     defp reference_expr(%Reference{} = ref, table, name),
-      do: [", CONSTRAINT ", reference_name(ref, table, name),
-           " FOREIGN KEY (", quote_name(name), ?),
-           " REFERENCES ", quote_table(ref.prefix || table.prefix, ref.table),
-           ?(, quote_name(ref.column), ?),
-           reference_on_delete(ref.on_delete), reference_on_update(ref.on_update)]
+      do: [", " | reference_expr("FOREIGN KEY", ref, table, name)]
+
+    defp constraint_expr(%Reference{} = ref, table, name),
+      do: [", ADD " | reference_expr("FOREIGN KEY", ref, table, name)]
+
+    defp constraint_if_not_exists_expr(%Reference{} = ref, table, name),
+      do: [", ADD " | reference_expr("FOREIGN KEY IF NOT EXISTS", ref, table, name)]
 
     defp drop_constraint_expr(%Reference{} = ref, table, name),
       do: ["DROP FOREIGN KEY ", reference_name(ref, table, name), ", "]
@@ -886,9 +992,9 @@ if Code.ensure_loaded?(MyXQL) do
       {expr || expr(source, sources, query), name}
     end
 
-    defp quote_name(name)
     defp quote_name(name) when is_atom(name),
       do: quote_name(Atom.to_string(name))
+
     defp quote_name(name) do
       if String.contains?(name, "`") do
         error!(nil, "bad field name #{inspect name}")
@@ -896,6 +1002,8 @@ if Code.ensure_loaded?(MyXQL) do
 
       [?`, name, ?`]
     end
+
+    defp quote_names(names), do: intersperse_map(names, ?,, &quote_name/1)
 
     defp quote_table(nil, name),    do: quote_table(name)
     defp quote_table(prefix, name), do: [quote_table(prefix), ?., quote_table(name)]
@@ -927,12 +1035,21 @@ if Code.ensure_loaded?(MyXQL) do
       |> :binary.replace("\\", "\\\\", [:global])
     end
 
+    defp escape_json_key(value) when is_binary(value) do
+      value
+      |> escape_string()
+      |> :binary.replace("\"", "\\\\\"", [:global])
+    end
+
     defp ecto_cast_to_db(:id, _query), do: "unsigned"
     defp ecto_cast_to_db(:integer, _query), do: "unsigned"
     defp ecto_cast_to_db(:string, _query), do: "char"
     defp ecto_cast_to_db(:utc_datetime_usec, _query), do: "datetime(6)"
     defp ecto_cast_to_db(:naive_datetime_usec, _query), do: "datetime(6)"
     defp ecto_cast_to_db(type, query), do: ecto_to_db(type, query)
+
+    defp ecto_size_to_db(:binary), do: "varbinary"
+    defp ecto_size_to_db(type), do: ecto_to_db(type)
 
     defp ecto_to_db(type, query \\ nil)
     defp ecto_to_db({:array, _}, query),           do: error!(query, "Array type is not supported by MySQL")
@@ -951,7 +1068,12 @@ if Code.ensure_loaded?(MyXQL) do
     defp ecto_to_db(:utc_datetime_usec, _query),   do: "datetime"
     defp ecto_to_db(:naive_datetime, _query),      do: "datetime"
     defp ecto_to_db(:naive_datetime_usec, _query), do: "datetime"
-    defp ecto_to_db(other, _query),                do: Atom.to_string(other)
+    defp ecto_to_db(atom, _query) when is_atom(atom),  do: Atom.to_string(atom)
+    defp ecto_to_db(type, _query) do
+      raise ArgumentError,
+            "unsupported type `#{inspect(type)}`. The type can either be an atom, a string " <>
+              "or a tuple of the form `{:map, t}` where `t` itself follows the same conditions."
+    end
 
     defp error!(nil, message) do
       raise ArgumentError, message

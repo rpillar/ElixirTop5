@@ -1,43 +1,60 @@
 defmodule Credo.Check.Refactor.PipeChainStart do
-  @moduledoc false
+  use Credo.Check,
+    tags: [:controversial],
+    param_defaults: [
+      excluded_argument_types: [],
+      excluded_functions: []
+    ],
+    explanations: [
+      check: """
+      Pipes (`|>`) can become more readable by starting with a "raw" value.
 
-  @checkdoc """
-  Pipes (`|>`) can become more readable by starting with a "raw" value.
+      So while this is easily comprehendable:
 
-  So while this is easily comprehendable:
+          list
+          |> Enum.take(5)
+          |> Enum.shuffle
+          |> pick_winner()
 
-      list
-      |> Enum.take(5)
-      |> Enum.shuffle
-      |> pick_winner()
+      This might be harder to read:
 
-  This might be harder to read:
+          Enum.take(list, 5)
+          |> Enum.shuffle
+          |> pick_winner()
 
-      Enum.take(list, 5)
-      |> Enum.shuffle
-      |> pick_winner()
-
-  As always: This is just a suggestion. Check the configuration options for
-  tweaking or disabling this check.
-  """
-  @explanation [
-    check: @checkdoc,
-    params: [
-      excluded_functions: "All functions listed will be ignored.",
-      excluded_argument_types: "All pipes with argument types listed will be ignored."
+      As always: This is just a suggestion. Check the configuration options for
+      tweaking or disabling this check.
+      """,
+      params: [
+        excluded_functions: "All functions listed will be ignored.",
+        excluded_argument_types: "All pipes with argument types listed will be ignored."
+      ]
     ]
-  ]
-  @default_params [excluded_argument_types: [], excluded_functions: []]
 
-  use Credo.Check
+  @elixir_custom_operators [
+    :<-,
+    :|||,
+    :&&&,
+    :<<<,
+    :>>>,
+    :<<~,
+    :~>>,
+    :<~,
+    :~>,
+    :<~>,
+    :<|>,
+    :^^^,
+    :~~~
+  ]
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
-    excluded_functions = Params.get(params, :excluded_functions, @default_params)
+    excluded_functions = Params.get(params, :excluded_functions, __MODULE__)
 
-    excluded_argument_types = Params.get(params, :excluded_argument_types, @default_params)
+    excluded_argument_types = Params.get(params, :excluded_argument_types, __MODULE__)
 
     Credo.Code.prewalk(
       source_file,
@@ -45,6 +62,7 @@ defmodule Credo.Check.Refactor.PipeChainStart do
     )
   end
 
+  # TODO: consider for experimental check front-loader (ast)
   defp traverse(
          {:|>, _, [{:|>, _, _} | _]} = ast,
          issues,
@@ -96,11 +114,20 @@ defmodule Credo.Check.Refactor.PipeChainStart do
         :||,
         :-,
         :for,
-        :with,
-        :<-
+        :with
       ] do
     defp valid_chain_start?(
            {unquote(atom), _meta, _arguments},
+           _excluded_functions,
+           _excluded_argument_types
+         ) do
+      true
+    end
+  end
+
+  for operator <- @elixir_custom_operators do
+    defp valid_chain_start?(
+           {unquote(operator), _meta, _arguments},
            _excluded_functions,
            _excluded_argument_types
          ) do
@@ -202,9 +229,10 @@ defmodule Credo.Check.Refactor.PipeChainStart do
     function_name = to_function_call_name(ast)
 
     found_argument_types =
-      arguments
-      |> List.first()
-      |> argument_type()
+      case arguments do
+        [nil | _] -> [:atom]
+        x -> x |> List.first() |> argument_type()
+      end
 
     Enum.member?(excluded_functions, function_name) ||
       Enum.any?(

@@ -6,17 +6,27 @@ defmodule Ecto.Query.API do
     * Arithmetic operators: `+`, `-`, `*`, `/`
     * Boolean operators: `and`, `or`, `not`
     * Inclusion operator: `in/2`
+    * Subquery operators: `any`, `all` and `exists`
     * Search functions: `like/2` and `ilike/2`
     * Null check functions: `is_nil/1`
     * Aggregates: `count/0`, `count/1`, `avg/1`, `sum/1`, `min/1`, `max/1`
     * Date/time intervals: `datetime_add/3`, `date_add/3`, `from_now/2`, `ago/2`
     * Inside select: `struct/2`, `map/2`, `merge/2` and literals (map, tuples, lists, etc)
-    * General: `fragment/1`, `field/2` and `type/2`
+    * General: `fragment/1`, `field/2`, `type/2`, `as/1`, `parent_as/1`
 
   Note the functions in this module exist for documentation
   purposes and one should never need to invoke them directly.
   Furthermore, it is possible to define your own macros and
   use them in Ecto queries (see docs for `fragment/1`).
+
+  ## Intervals
+
+  Ecto supports following values for `interval` option: `"year"`, `"month"`,
+  `"week"`, `"day"`, `"hour"`, `"minute"`, `"second"`, `"millisecond"`, and
+  `"microsecond"`.
+
+  `Date`/`Time` functions like `datetime_add/3`, `date_add/3`, `from_now/2`,
+  `ago/2` take `interval` as an argument.
 
   ## Window API
 
@@ -109,8 +119,70 @@ defmodule Ecto.Query.API do
   or even a column in the database with array type:
 
       from p in Post, where: "elixir" in p.tags
+
+  Additionally, the right side may also be a subquery:
+
+      from c in Comment, where: c.post_id in subquery(
+        from(p in Post, where: p.created_at > ^since)
+      )
   """
   def left in right, do: doc! [left, right]
+
+  @doc """
+  Evaluates to true if the provided subquery returns 1 or more rows.
+
+      from p in Post,
+        as: :post,
+        where:
+          exists(
+            from(
+              c in Comment,
+              where: parent_as(:post).id == c.post_id and c.replies_count > 5,
+              select: 1
+            )
+          )
+
+  This is best used in conjunction with `parent_as` to correlate the subquery
+  with the parent query to test some condition on related rows in a different table.
+  In the above example the query returns posts which have at least one comment that
+  has more than 5 replies.
+  """
+  def exists(subquery), do: doc! [subquery]
+
+  @doc """
+  Tests whether one or more values returned from the provided subquery match in a comparison operation.
+
+      from p in Product, where: p.id == any(
+        from(li in LineItem, select: [li.product_id], where: li.created_at > ^since and li.qty >= 10)
+      )
+
+  A product matches in the above example if a line item was created since the provided date where the customer purchased
+  at least 10 units.
+
+  Both `any` and `all` must be given a subquery as an argument, and they must be used on the right hand side of a comparison.
+  Both can be used with every comparison operator: `==`, `!=`, `>`, `>=`, `<`, `<=`.
+  """
+  def any(subquery), do: doc! [subquery]
+
+  @doc """
+  Evaluates whether all values returned from the provided subquery match in a comparison operation.
+
+      from p in Post, where: p.visits >= all(
+        from(p in Post, select: avg(p.visits), group_by: [p.category_id])
+      )
+
+  For a post to match in the above example it must be visited at least as much as the average post in all categories.
+
+      from p in Post, where: p.visits == all(
+        from(p in Post, select: max(p.visits))
+      )
+
+  The above example matches all the posts which are tied for being the most visited.
+
+  Both `any` and `all` must be given a subquery as an argument, and they must be used on the right hand side of a comparison.
+  Both can be used with every comparison operator: `==`, `!=`, `>`, `>=`, `<`, `<=`.
+  """
+  def all(subquery), do: doc! [subquery]
 
   @doc """
   Searches for `search` in `string`.
@@ -229,14 +301,13 @@ defmodule Ecto.Query.API do
 
       # Get all items published since the last month
       from p in Post, where: p.published_at >
-                             datetime_add(^NaiveDateTime.utc_now, -1, "month")
+                             datetime_add(^NaiveDateTime.utc_now(), -1, "month")
 
   In the example above, we used `datetime_add/3` to subtract one month
   from the current datetime and compared it with the `p.published_at`.
   If you want to perform operations on date, `date_add/3` could be used.
 
-  The following intervals are supported: year, month, week, day, hour,
-  minute, second, millisecond and microsecond.
+  See [Intervals](#module-intervals) for supported `interval` values.
   """
   def datetime_add(datetime, count, interval), do: doc! [datetime, count, interval]
 
@@ -244,6 +315,8 @@ defmodule Ecto.Query.API do
   Adds a given interval to a date.
 
   See `datetime_add/3` for more information.
+
+  See [Intervals](#module-intervals) for supported `interval` values.
   """
   def date_add(date, count, interval), do: doc! [date, count, interval]
 
@@ -252,6 +325,8 @@ defmodule Ecto.Query.API do
 
   The current time in UTC is retrieved from Elixir and
   not from the database.
+
+  See [Intervals](#module-intervals) for supported `interval` values.
 
   ## Examples
 
@@ -265,6 +340,8 @@ defmodule Ecto.Query.API do
 
   The current time in UTC is retrieved from Elixir and
   not from the database.
+
+  See [Intervals](#module-intervals) for supported `interval` values.
 
   ## Examples
 
@@ -285,7 +362,7 @@ defmodule Ecto.Query.API do
                  fragment("lower(?)", p.title) == ^title
       end
 
-  Every occurence of the `?` character will be interpreted as a place
+  Every occurrence of the `?` character will be interpreted as a place
   for additional argument. If the literal character `?` is required,
   it can be escaped with `\\\\?` (one escape for strings, another for
   fragment).
@@ -302,11 +379,6 @@ defmodule Ecto.Query.API do
   Or even say the right side is of the same type as `p.title`:
 
       fragment("lower(?)", p.title) == type(^title, p.title)
-
-  It is possible to make use of PostgreSQL's JSON/JSONB data type
-  with fragments, as well:
-
-      fragment("?->>? ILIKE ?", p.map, "key_name", ^some_value)
 
   ## Keyword fragments
 
@@ -343,8 +415,8 @@ defmodule Ecto.Query.API do
   Allows a field to be dynamically accessed.
 
       def at_least_four(doors_or_tires) do
-          from c in Car,
-        where: field(c, ^doors_or_tires) >= 4
+        from c in Car,
+          where: field(c, ^doors_or_tires) >= 4
       end
 
   In the example above, both `at_least_four(:doors)` and `at_least_four(:tires)`
@@ -387,12 +459,12 @@ defmodule Ecto.Query.API do
   from the database. In other words, the expression below:
 
       from(city in City, preload: :country,
-           select: {struct(city, [:country_id]), struct(city, [:name])}
+           select: {struct(city, [:country_id]), struct(city, [:name])})
 
   is expanded to:
 
       from(city in City, preload: :country,
-           select: {struct(city, [:country_id, :name]), struct(city, [:country_id, :name])}
+           select: {struct(city, [:country_id, :name]), struct(city, [:country_id, :name])})
 
   **IMPORTANT**: When filtering fields for associations, you
   MUST include the foreign keys used in the relationship,
@@ -419,17 +491,23 @@ defmodule Ecto.Query.API do
   from the database. In other words, the expression below:
 
       from(city in City, preload: :country,
-           select: {map(city, [:country_id]), map(city, [:name])}
+           select: {map(city, [:country_id]), map(city, [:name])})
 
   is expanded to:
 
       from(city in City, preload: :country,
-           select: {map(city, [:country_id, :name]), map(city, [:country_id, :name])}
+           select: {map(city, [:country_id, :name]), map(city, [:country_id, :name])})
 
   For preloads, the selected fields may be specified from the parent:
 
       from(city in City, preload: :country,
            select: map(city, [:country_id, :name, country: [:id, :population]]))
+
+   It's also possible to select a struct from one source but only a subset of
+   fields from one of its associations:
+
+      from(city in City, preload: :country,
+           select: %{city | country: map(country: [:id, :population])})
 
   **IMPORTANT**: When filtering fields for associations, you
   MUST include the foreign keys used in the relationship,
@@ -450,6 +528,43 @@ defmodule Ecto.Query.API do
   to merge different select clauses.
   """
   def merge(left_map, right_map), do: doc! [left_map, right_map]
+
+  @doc """
+  Returns value from the `json_field` pointed to by `path`.
+
+      from(post in Post, select: json_extract_path(post.meta, ["author", "name"]))
+
+  The query can be also rewritten as:
+
+      from(post in Post, select: post.meta["author"]["name"])
+
+  Path elements can be integers to access values in JSON arrays:
+
+      from(post in Post, select: post.meta["tags"][0]["name"])
+
+  Any element of the path can be dynamic:
+
+      field = "name"
+      from(post in Post, select: post.meta["author"][^field])
+
+  ## Warning
+
+  The underlying data in the JSON column is returned without any
+  additional decoding. This means "null" JSON values are not the
+  same as SQL's "null". For example, the `Repo.all` operation below
+  returns an empty list because `p.meta["author"]` returns JSON's
+  null and therefore `is_nil` does not succeed:
+
+      Repo.insert!(%Post{meta: %{author: nil}})
+      Repo.all(from(post in Post, where: is_nil(p.meta["author"])))
+
+  Similarly, other types, such as datetimes, are returned as strings.
+  This means conditions like `post.meta["published_at"] > from_now(-1, "day")`
+  may return incorrect results or fail as the underlying database
+  tries to compare incompatible types. You can, however, use `type/2`
+  to force the types on the database level.
+  """
+  def json_extract_path(json_field, path), do: doc! [json_field, path]
 
   @doc """
   Casts the given value to the given type at the database level.
@@ -486,9 +601,26 @@ defmodule Ecto.Query.API do
   Or to type aggregation results:
 
       from p in Post, select: type(avg(p.cost), :integer)
+      from p in Post, select: type(filter(avg(p.cost), p.cost > 0), :integer)
 
   """
   def type(interpolated_value, type), do: doc! [interpolated_value, type]
+
+  @doc """
+  Refer to a named atom binding.
+
+  See the "Named binding" section in `Ecto.Query` for more information.
+  """
+  def as(binding), do: doc! [binding]
+
+  @doc """
+  Refer to a named atom binding in the parent query.
+
+  This is available only inside subqueries.
+
+  See the "Named binding" section in `Ecto.Query` for more information.
+  """
+  def parent_as(binding), do: doc! [binding]
 
   defp doc!(_) do
     raise "the functions in Ecto.Query.API should not be invoked directly, " <>

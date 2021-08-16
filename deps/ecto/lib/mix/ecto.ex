@@ -23,10 +23,12 @@ defmodule Mix.Ecto do
 
   defp parse_repo([], []) do
     apps =
-      if apps_paths = Mix.Project.apps_paths do
-        Map.keys(apps_paths)
+      if apps_paths = Mix.Project.apps_paths() do
+        # TODO: Use the proper ordering from Mix.Project.deps_apps
+        # when we depend on Elixir v1.11+.
+        apps_paths |> Map.keys() |> Enum.sort()
       else
-        [Mix.Project.config[:app]]
+        [Mix.Project.config()[:app]]
       end
 
     apps
@@ -37,7 +39,7 @@ defmodule Mix.Ecto do
     |> Enum.uniq()
     |> case do
       [] ->
-        Mix.shell.error """
+        Mix.shell().error """
         warning: could not find Ecto repos in any of the apps: #{inspect apps}.
 
         You can avoid this warning by passing the -r flag or by setting the
@@ -60,10 +62,15 @@ defmodule Mix.Ecto do
   """
   @spec ensure_repo(module, list) :: Ecto.Repo.t
   def ensure_repo(repo, args) do
-    Mix.Task.run "loadpaths", args
+    # Do not pass the --force switch used by some tasks downstream
+    args = List.delete(args, "--force")
 
-    unless "--no-compile" in args do
-      Mix.Project.compile(args)
+    # TODO: Use only app.config when we depend on Elixir v1.11+.
+    if Code.ensure_loaded?(Mix.Tasks.App.Config) do
+      Mix.Task.run("app.config", args)
+    else
+      Mix.Task.run("loadpaths", args)
+      "--no-compile" not in args && Mix.Task.run("compile", args)
     end
 
     case Code.ensure_compiled(repo) do
@@ -74,6 +81,7 @@ defmodule Mix.Ecto do
           Mix.raise "Module #{inspect repo} is not an Ecto.Repo. " <>
                     "Please configure your app accordingly or pass a repo with the -r option."
         end
+
       {:error, error} ->
         Mix.raise "Could not load #{inspect repo}, error: #{inspect error}. " <>
                   "Please configure your app accordingly or pass a repo with the -r option."
@@ -82,12 +90,42 @@ defmodule Mix.Ecto do
 
   @doc """
   Asks if the user wants to open a file based on ECTO_EDITOR.
+
+  By default, it attempts to open the file and line using the
+  `file:line` notation. For example, if your editor is called
+  `subl`, it will open the file as:
+
+      subl path/to/file:line
+
+  It is important that you choose an editor command that does
+  not block nor that attempts to run an editor directly in the
+  terminal. Command-line based editors likely need extra
+  configuration so they open up the given file and line in a
+  separate window.
+
+  Custom editors are supported by using the `__FILE__` and
+  `__LINE__` notations, for example:
+
+      ECTO_EDITOR="my_editor +__LINE__ __FILE__"
+
+  and Elixir will properly interpolate values.
+
   """
-  @spec open?(binary) :: boolean
-  def open?(file) do
+  @spec open?(binary, non_neg_integer) :: boolean
+  def open?(file, line \\ 1) do
     editor = System.get_env("ECTO_EDITOR") || ""
+
     if editor != "" do
-      :os.cmd(to_charlist(editor <> " " <> inspect(file)))
+      command =
+        if editor =~ "__FILE__" or editor =~ "__LINE__" do
+          editor
+          |> String.replace("__FILE__", inspect(file))
+          |> String.replace("__LINE__", Integer.to_string(line))
+        else
+          "#{editor} #{inspect(file)}:#{line}"
+        end
+
+      Mix.shell().cmd(command)
       true
     else
       false
@@ -100,8 +138,9 @@ defmodule Mix.Ecto do
   Raises on umbrella application.
   """
   def no_umbrella!(task) do
-    if Mix.Project.umbrella? do
-      Mix.raise "Cannot run task #{inspect task} from umbrella application"
+    if Mix.Project.umbrella?() do
+      Mix.raise "Cannot run task #{inspect task} from umbrella project root. " <>
+                  "Change directory to one of the umbrella applications and try again"
     end
   end
 

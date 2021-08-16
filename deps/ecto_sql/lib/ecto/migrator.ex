@@ -1,8 +1,25 @@
 defmodule Ecto.Migrator do
   @moduledoc """
-  This module provides the migration API.
+  Lower level API for managing migrations.
 
-  ## Example
+  EctoSQL provides three mix tasks for running and managing migrations:
+
+    * `mix ecto.migrate` - migrates a repository
+    * `mix ecto.rollback` - rolls back a particular migration
+    * `mix ecto.migrations` - shows all migrations and their status
+
+  Those tasks are built on top of the functions in this module.
+  While the tasks above cover most use cases, it may be necessary
+  from time to time to jump into the lower level API. For example,
+  if you are assembling an Elixir release, Mix is not available,
+  so this module provides a nice complement to still migrate your
+  system.
+
+  To learn more about migrations in general, see `Ecto.Migration`.
+
+  ## Example: Running an individual migration
+
+  Imagine you have this migration:
 
       defmodule MyApp.MigrationExample do
         use Ecto.Migration
@@ -16,24 +33,145 @@ defmodule Ecto.Migrator do
         end
       end
 
+  You can execute it manually with:
+
       Ecto.Migrator.up(Repo, 20080906120000, MyApp.MigrationExample)
+
+  ## Example: Running migrations in a release
+
+  Elixir v1.9 introduces `mix release`, which generates a self-contained
+  directory that consists of your application code, all of its dependencies,
+  plus the whole Erlang Virtual Machine (VM) and runtime.
+
+  When a release is assembled, Mix is not longer available inside a release
+  and therefore none of the Mix tasks. Users may still need a mechanism to
+  migrate their databases. This can be achieved with using the `Ecto.Migrator`
+  module:
+
+      defmodule MyApp.Release do
+        @app :my_app
+
+        def migrate do
+          for repo <- repos() do
+            {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
+          end
+        end
+
+        def rollback(repo, version) do
+          {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
+        end
+
+        defp repos do
+          Application.load(@app)
+          Application.fetch_env!(@app, :ecto_repos)
+        end
+      end
+
+  The example above uses `with_repo/3` to make sure the repository is
+  started and then runs all migrations up or a given migration down.
+  Note you will have to replace `MyApp` and `:my_app` on the first two
+  lines by your actual application name. Once the file above is added
+  to your application, you can assemble a new release and invoke the
+  commands above in the release root like this:
+
+      $ bin/my_app eval "MyApp.Release.migrate"
+      $ bin/my_app eval "MyApp.Release.rollback(MyApp.Repo, 20190417140000)"
 
   """
 
   require Logger
+  require Ecto.Query
 
   alias Ecto.Migration.Runner
   alias Ecto.Migration.SchemaMigration
 
   @doc """
-  Gets the migrations path from a repository.
+  Ensures the repo is started to perform migration operations.
+
+  All of the application required to run the repo will be started
+  before hand with chosen mode. If the repo has not yet been started,
+  it is manually started, with a `:pool_size` of 2, before the given
+  function is executed, and the repo is then terminated. If the repo
+  was already started, then the function is directly executed, without
+  terminating the repo afterwards.
+
+  Although this function was designed to start repositories for running
+  migrations, it can be used by any code, Mix task, or release tooling
+  that needs to briefly start a repository to perform a certain operation
+  and then terminate.
+
+  The repo may also configure a `:start_apps_before_migration` option
+  which is a list of applications to be started before the migration
+  runs.
+
+  It returns `{:ok, fun_return, apps}`, with all apps that have been
+  started, or `{:error, term}`.
+
+  ## Options
+
+    * `:pool_size` - The pool size to start the repo for migrations.
+      Defaults to 2.
+    * `:mode` - The mode to start all applications.
+      Defaults to `:permanent`.
+
+  ## Examples
+
+      {:ok, _, _} =
+        Ecto.Migrator.with_repo(repo, fn repo ->
+          Ecto.Migrator.run(repo, :up, all: true)
+        end)
+
   """
-  @spec migrations_path(Ecto.Repo.t) :: String.t
-  def migrations_path(repo) do
+  def with_repo(repo, fun, opts \\ []) do
+    config = repo.config()
+    mode = Keyword.get(opts, :mode, :permanent)
+    apps = [:ecto_sql | config[:start_apps_before_migration] || []]
+
+    extra_started =
+      Enum.flat_map(apps, fn app ->
+        {:ok, started} = Application.ensure_all_started(app, mode)
+        started
+      end)
+
+    {:ok, repo_started} = repo.__adapter__().ensure_all_started(config, mode)
+    started = extra_started ++ repo_started
+    pool_size = Keyword.get(opts, :pool_size, 2)
+    migration_repo = config[:migration_repo] || repo
+
+    case ensure_repo_started(repo, pool_size) do
+      {:ok, repo_after} ->
+        case ensure_migration_repo_started(migration_repo, repo) do
+          {:ok, migration_repo_after} ->
+            try do
+              {:ok, fun.(repo), started}
+            after
+              after_action(repo, repo_after)
+              after_action(migration_repo, migration_repo_after)
+            end
+
+          {:error, _} = error ->
+            after_action(repo, repo_after)
+            error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Gets the migrations path from a repository.
+
+  This function accepts an optional second parameter to customize the
+  migrations directory. This can be used to specify a custom migrations
+  path.
+  """
+  @spec migrations_path(Ecto.Repo.t, String.t) :: String.t
+  def migrations_path(repo, directory \\ "migrations") do
     config = repo.config()
     priv = config[:priv] || "priv/#{repo |> Module.split |> List.last |> Macro.underscore}"
     app = Keyword.fetch!(config, :otp_app)
-    Application.app_dir(app, Path.join(priv, "migrations"))
+    Application.app_dir(app, Path.join(priv, directory))
   end
 
   @doc """
@@ -47,11 +185,15 @@ defmodule Ecto.Migrator do
     * `:prefix` - the prefix to run the migrations on
     * `:dynamic_repo` - the name of the Repo supervisor process.
       See `c:Ecto.Repo.put_dynamic_repo/1`.
-
+    * `:skip_table_creation` - skips any attempt to create the migration table
+      Useful for situations where user needs to check migrations but has
+      insufficient permissions to create the table.  Note that migrations
+      commands may fail if this is set to true. Defaults to `false`.  Accepts a
+      boolean.
   """
   @spec migrated_versions(Ecto.Repo.t, Keyword.t) :: [integer]
   def migrated_versions(repo, opts \\ []) do
-    lock_for_migrations repo, opts, fn versions -> versions end
+    lock_for_migrations true, repo, opts, fn _config, versions -> versions end
   end
 
   @doc """
@@ -70,11 +212,11 @@ defmodule Ecto.Migrator do
   """
   @spec up(Ecto.Repo.t, integer, module, Keyword.t) :: :ok | :already_up
   def up(repo, version, module, opts \\ []) do
-    lock_for_migrations repo, opts, fn versions ->
+    conditional_lock_for_migrations module, version, repo, opts, fn config, versions ->
       if version in versions do
         :already_up
       else
-        result = do_up(repo, version, module, opts)
+        result = do_up(repo, config, version, module, opts)
 
         if version != Enum.max([version | versions]) do
           latest = Enum.max(versions)
@@ -103,10 +245,10 @@ defmodule Ecto.Migrator do
     end
   end
 
-  defp do_up(repo, version, module, opts) do
-    async_migrate_maybe_in_transaction(repo, version, module, :up, opts, fn ->
-      attempt(repo, version, module, :forward, :up, :up, opts)
-        || attempt(repo, version, module, :forward, :change, :up, opts)
+  defp do_up(repo, config, version, module, opts) do
+    async_migrate_maybe_in_transaction(repo, config, version, module, :up, opts, fn ->
+      attempt(repo, config, version, module, :forward, :up, :up, opts)
+        || attempt(repo, config, version, module, :forward, :change, :up, opts)
         || {:error, Ecto.MigrationError.exception(
             "#{inspect module} does not implement a `up/0` or `change/0` function")}
     end)
@@ -128,84 +270,58 @@ defmodule Ecto.Migrator do
   """
   @spec down(Ecto.Repo.t, integer, module) :: :ok | :already_down
   def down(repo, version, module, opts \\ []) do
-    lock_for_migrations repo, opts, fn versions ->
+    conditional_lock_for_migrations module, version, repo, opts, fn config, versions ->
       if version in versions do
-        do_down(repo, version, module, opts)
+        do_down(repo, config, version, module, opts)
       else
         :already_down
       end
     end
   end
 
-  defp do_down(repo, version, module, opts) do
-    async_migrate_maybe_in_transaction(repo, version, module, :down, opts, fn ->
-      attempt(repo, version, module, :forward, :down, :down, opts)
-        || attempt(repo, version, module, :backward, :change, :down, opts)
+  defp do_down(repo, config, version, module, opts) do
+    async_migrate_maybe_in_transaction(repo, config, version, module, :down, opts, fn ->
+      attempt(repo, config, version, module, :forward, :down, :down, opts)
+        || attempt(repo, config, version, module, :backward, :change, :down, opts)
         || {:error, Ecto.MigrationError.exception(
             "#{inspect module} does not implement a `down/0` or `change/0` function")}
     end)
   end
 
-  defp async_migrate_maybe_in_transaction(repo, version, module, direction, opts, fun) do
-    parent = self()
-    ref = make_ref()
+  defp async_migrate_maybe_in_transaction(repo, config, version, module, direction, opts, fun) do
     dynamic_repo = repo.get_dynamic_repo()
-    task = Task.async(fn -> run_maybe_in_transaction(parent, ref, repo, dynamic_repo, module, fun) end)
 
-    if migrated_successfully?(ref, task.pid) do
-      try do
-        # The table with schema migrations can only be updated from
-        # the parent process because it has a lock on the table
-        verbose_schema_migration repo, "update schema migrations", fn ->
-          apply(SchemaMigration, direction, [repo, version, opts[:prefix]])
-        end
-      catch
-        kind, error ->
-          Task.shutdown(task, :brutal_kill)
-          :erlang.raise(kind, error, System.stacktrace())
-      end
+    fun_with_status = fn ->
+      result = fun.()
+      apply(SchemaMigration, direction, [repo, config, version, opts[:prefix]])
+      result
     end
 
-    send(task.pid, ref)
-    Task.await(task, :infinity)
+    fn -> run_maybe_in_transaction(repo, dynamic_repo, module, fun_with_status) end
+    |> Task.async()
+    |> Task.await(:infinity)
   end
 
-  defp migrated_successfully?(ref, pid) do
-    receive do
-      {^ref, :ok} -> true
-      {^ref, _} -> false
-      {:EXIT, ^pid, _} -> false
-    end
-  end
-
-  defp run_maybe_in_transaction(parent, ref, repo, dynamic_repo, module, fun) do
+  defp run_maybe_in_transaction(repo, dynamic_repo, module, fun) do
     repo.put_dynamic_repo(dynamic_repo)
 
     if module.__migration__[:disable_ddl_transaction] ||
-         not repo.__adapter__.supports_ddl_transaction? do
-      send_and_receive(parent, ref, fun.())
+         not repo.__adapter__().supports_ddl_transaction? do
+      fun.()
     else
       {:ok, result} =
-        repo.transaction(
-          fn -> send_and_receive(parent, ref, fun.()) end,
-          log: false, timeout: :infinity
-        )
+        repo.transaction(fun, log: false, timeout: :infinity)
 
       result
     end
   catch kind, reason ->
-    send_and_receive(parent, ref, {kind, reason, System.stacktrace})
+    {kind, reason, __STACKTRACE__}
   end
 
-  defp send_and_receive(parent, ref, value) do
-    send parent, {ref, value}
-    receive do: (^ref -> value)
-  end
-
-  defp attempt(repo, version, module, direction, operation, reference, opts) do
+  defp attempt(repo, config, version, module, direction, operation, reference, opts) do
     if Code.ensure_loaded?(module) and
        function_exported?(module, operation, 0) do
-      Runner.run(repo, version, module, direction, operation, reference, opts)
+      Runner.run(repo, config, version, module, direction, operation, reference, opts)
       :ok
     end
   end
@@ -215,23 +331,24 @@ defmodule Ecto.Migrator do
 
   Equivalent to:
 
-      Ecto.Migrator.run(repo, Ecto.Migrator.migrations_path(repo), direction, opts)
+      Ecto.Migrator.run(repo, [Ecto.Migrator.migrations_path(repo)], direction, opts)
 
   See `run/4` for more information.
   """
   @spec run(Ecto.Repo.t, atom, Keyword.t) :: [integer]
   def run(repo, direction, opts) do
-    run(repo, migrations_path(repo), direction, opts)
+    run(repo, [migrations_path(repo)], direction, opts)
   end
 
   @doc ~S"""
   Apply migrations to a repository with a given strategy.
 
   The second argument identifies where the migrations are sourced from.
-  A binary representing a directory may be passed, in which case we will
-  load all files following the "#{VERSION}_#{NAME}.exs" schema. The
-  `migration_source` may also be a list of a list of tuples that identify
-  the version number and migration modules to be run, for example:
+  A binary representing directory (or a list of binaries representing
+  directories) may be passed, in which case we will load all files
+  following the "#{VERSION}_#{NAME}.exs" schema. The `migration_source`
+  may also be a list of tuples that identify the version number and
+  migration modules to be run, for example:
 
       Ecto.Migrator.run(Repo, [{0, MyApp.Migration1}, {1, MyApp.Migration2}, ...], :up, opts)
 
@@ -259,12 +376,16 @@ defmodule Ecto.Migrator do
     * `:log` - the level to use for logging. Defaults to `:info`.
       Can be any of `Logger.level/0` values or a boolean.
     * `:prefix` - the prefix to run the migrations on
+    * `:dynamic_repo` - the name of the Repo supervisor process.
+      See `c:Ecto.Repo.put_dynamic_repo/1`.
 
   """
-  @spec run(Ecto.Repo.t, binary | [{integer, module}], atom, Keyword.t) :: [integer]
+  @spec run(Ecto.Repo.t, String.t | [String.t] | [{integer, module}], atom, Keyword.t) :: [integer]
   def run(repo, migration_source, direction, opts) do
+    migration_source = List.wrap(migration_source)
+
     pending =
-      lock_for_migrations repo, opts, fn versions ->
+      lock_for_migrations true, repo, opts, fn _config, versions ->
         cond do
           opts[:all] ->
             pending_all(versions, migration_source, direction)
@@ -277,6 +398,9 @@ defmodule Ecto.Migrator do
         end
       end
 
+    # The lock above already created the table, so we can now skip it.
+    opts = Keyword.put(opts, :skip_table_creation, true)
+
     ensure_no_duplication!(pending)
     migrate(Enum.map(pending, &load_migration!/1), direction, repo, opts)
   end
@@ -287,23 +411,25 @@ defmodule Ecto.Migrator do
 
   Equivalent to:
 
-      Ecto.Migrator.migrations(repo, Ecto.Migrator.migrations_path(repo))
+      Ecto.Migrator.migrations(repo, [Ecto.Migrator.migrations_path(repo)])
 
   """
   @spec migrations(Ecto.Repo.t) :: [{:up | :down, id :: integer(), name :: String.t}]
   def migrations(repo) do
-    migrations(repo, migrations_path(repo))
+    migrations(repo, [migrations_path(repo)])
   end
 
   @doc """
   Returns an array of tuples as the migration status of the given repo,
   without actually running any migrations.
   """
-  @spec migrations(Ecto.Repo.t, String.t) :: [{:up | :down, id :: integer(), name :: String.t}]
-  def migrations(repo, directory) do
+  @spec migrations(Ecto.Repo.t, [String.t], Keyword.t) :: [{:up | :down, id :: integer(), name :: String.t}]
+  def migrations(repo, directories, opts \\ []) do
+    directories = List.wrap(directories)
+
     repo
-    |> migrated_versions
-    |> collect_migrations(directory)
+    |> migrated_versions(opts)
+    |> collect_migrations(directories)
     |> Enum.sort_by(fn {_, version, _} -> version end)
   end
 
@@ -335,20 +461,43 @@ defmodule Ecto.Migrator do
     versions -- versions_with_file
   end
 
-  defp lock_for_migrations(repo, opts, fun) do
+  defp lock_for_migrations(lock_or_migration_number, repo, opts, fun) do
     dynamic_repo = Keyword.get(opts, :dynamic_repo, repo)
+    skip_table_creation = Keyword.get(opts, :skip_table_creation, false)
     previous_dynamic_repo = repo.put_dynamic_repo(dynamic_repo)
 
     try do
-      verbose_schema_migration repo, "create schema migrations table", fn ->
-        SchemaMigration.ensure_schema_migrations_table!(repo, opts)
+      config = repo.config()
+
+      unless skip_table_creation do
+        verbose_schema_migration repo, "create schema migrations table", fn ->
+          SchemaMigration.ensure_schema_migrations_table!(repo, config, opts)
+        end
       end
 
-      meta = Ecto.Adapter.lookup_meta(dynamic_repo)
-      query = SchemaMigration.versions(repo, opts[:prefix])
-      callback = &fun.(repo.all(&1, timeout: :infinity, log: false))
+      {migration_repo, query, all_opts} = SchemaMigration.versions(repo, config, opts[:prefix])
 
-      case repo.__adapter__.lock_for_migrations(meta, query, opts, callback) do
+      migration_lock? =
+        Keyword.get(opts, :migration_lock, Keyword.get(config, :migration_lock, true))
+
+      opts =
+        Keyword.put(opts, :migration_source, config[:migration_source] || "schema_migrations")
+
+      result =
+        if lock_or_migration_number && migration_lock? do
+          # If there is a migration_repo, it wins over dynamic_repo,
+          # otherwise the dynamic_repo is the one locked in migrations.
+          meta_repo = if migration_repo != repo, do: migration_repo, else: dynamic_repo
+          meta = Ecto.Adapter.lookup_meta(meta_repo)
+
+          migration_repo.__adapter__().lock_for_migrations(meta, opts, fn ->
+            fun.(config, migration_repo.all(query, all_opts))
+          end)
+        else
+          fun.(config, migration_repo.all(query, all_opts))
+        end
+
+      case result do
         {kind, reason, stacktrace} ->
           :erlang.raise(kind, reason, stacktrace)
 
@@ -361,6 +510,11 @@ defmodule Ecto.Migrator do
     after
       repo.put_dynamic_repo(previous_dynamic_repo)
     end
+  end
+
+  defp conditional_lock_for_migrations(module, version, repo, opts, fun) do
+    lock = if module.__migration__[:disable_migration_lock], do: false, else: version
+    lock_for_migrations(lock, repo, opts, fun)
   end
 
   defp pending_to(versions, migration_source, direction, target) do
@@ -397,18 +551,19 @@ defmodule Ecto.Migrator do
     |> Enum.reverse
   end
 
-  # This function will match directories passed into `Migrator.run`.
-  defp migrations_for(migration_source) when is_binary(migration_source) do
-    Path.join([migration_source, "**", "*.exs"])
-    |> Path.wildcard()
-    |> Enum.map(&extract_migration_info/1)
-    |> Enum.filter(& &1)
-    |> Enum.sort()
-  end
-
-  # This function will match specific version/modules passed into `Migrator.run`.
   defp migrations_for(migration_source) when is_list(migration_source) do
-    Enum.map migration_source, fn {version, module} -> {version, module, module} end
+    migration_source
+    |> Enum.flat_map(fn
+      directory when is_binary(directory) ->
+        Path.join([directory, "**", "*.exs"])
+        |> Path.wildcard()
+        |> Enum.map(&extract_migration_info/1)
+        |> Enum.filter(& &1)
+
+      {version, module} ->
+        [{version, module, module}]
+    end)
+    |> Enum.sort()
   end
 
   defp extract_migration_info(file) do
@@ -444,7 +599,7 @@ defmodule Ecto.Migrator do
   end
 
   defp load_migration!({version, _, file}) when is_binary(file) do
-    loaded_modules = file |> Code.load_file() |> Enum.map(&elem(&1, 0))
+    loaded_modules = file |> Code.compile_file() |> Enum.map(&elem(&1, 0))
 
     if mod = Enum.find(loaded_modules, &migration?/1) do
       {version, mod}
@@ -459,7 +614,7 @@ defmodule Ecto.Migrator do
 
   defp migrate([], direction, _repo, opts) do
     level = Keyword.get(opts, :log, :info)
-    log(level, "Already #{direction}")
+    log(level, "Migrations already #{direction}")
     []
   end
 
@@ -470,17 +625,17 @@ defmodule Ecto.Migrator do
   end
 
   defp do_direction(:up, repo, version, mod, opts) do
-    lock_for_migrations repo, opts, fn versions ->
+    conditional_lock_for_migrations mod, version, repo, opts, fn config, versions ->
       unless version in versions do
-        do_up(repo, version, mod, opts)
+        do_up(repo, config, version, mod, opts)
       end
     end
   end
 
   defp do_direction(:down, repo, version, mod, opts) do
-    lock_for_migrations repo, opts, fn versions ->
+    conditional_lock_for_migrations mod, version, repo, opts, fn config, versions ->
       if version in versions do
-        do_down(repo, version, mod, opts)
+        do_down(repo, config, version, mod, opts)
       end
     end
   end
@@ -496,22 +651,70 @@ defmodule Ecto.Migrator do
           * The database does not exist
           * The "schema_migrations" table, which Ecto uses for managing
             migrations, was defined by another library
+          * There is a deadlock while migrating (such as using concurrent
+            indexes with a migration_lock)
 
         To fix the first issue, run "mix ecto.create".
 
         To address the second, you can run "mix ecto.drop" followed by
         "mix ecto.create". Alternatively you may configure Ecto to use
-        another table for managing migrations:
+        another table and/or repository for managing migrations:
 
             config #{inspect repo.config[:otp_app]}, #{inspect repo},
-              migration_source: "some_other_table_for_schema_migrations"
+              migration_source: "some_other_table_for_schema_migrations",
+              migration_repo: AnotherRepoForSchemaMigrations
 
         The full error report is shown below.
         """
-        reraise error, System.stacktrace
+        reraise error, __STACKTRACE__
     end
   end
 
   defp log(false, _msg), do: :ok
   defp log(level, msg),  do: Logger.log(level, msg)
+
+  defp ensure_repo_started(repo, pool_size) do
+    case repo.start_link(pool_size: pool_size) do
+      {:ok, _} ->
+        {:ok, :stop}
+
+      {:error, {:already_started, _pid}} ->
+        {:ok, :restart}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp ensure_migration_repo_started(repo, repo) do
+    {:ok, :noop}
+  end
+
+  defp ensure_migration_repo_started(migration_repo, _repo) do
+    case migration_repo.start_link() do
+      {:ok, _} ->
+        {:ok, :stop}
+
+      {:error, {:already_started, _pid}} ->
+        {:ok, :noop}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp after_action(repo, :restart) do
+    if Process.whereis(repo) do
+      %{pid: pid} = Ecto.Adapter.lookup_meta(repo)
+      Supervisor.restart_child(repo, pid)
+    end
+  end
+
+  defp after_action(repo, :stop) do
+    repo.stop()
+  end
+
+  defp after_action(_repo, :noop) do
+    :noop
+  end
 end

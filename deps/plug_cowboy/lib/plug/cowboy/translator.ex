@@ -8,10 +8,10 @@ defmodule Plug.Cowboy.Translator do
         min_level,
         :error,
         :format,
-        {~c"Ranch listener" ++ _, [ref, conn_pid, stream_id, stream_pid, reason, _]}
+        {~c"Ranch listener" ++ _, [ref, conn_pid, stream_id, stream_pid, reason, stack]}
       ) do
     extra = [" (connection ", inspect(conn_pid), ", stream id ", inspect(stream_id), ?)]
-    translate_ranch(min_level, ref, extra, stream_pid, reason)
+    translate_ranch(min_level, ref, extra, stream_pid, reason, stack)
   end
 
   def translate(_min_level, _level, _kind, _data) do
@@ -25,46 +25,48 @@ defmodule Plug.Cowboy.Translator do
          _ref,
          extra,
          pid,
-         {reason, {mod, :call, [%Plug.Conn{} = conn, _opts]}}
+         {reason, {mod, :call, [%Plug.Conn{} = conn, _opts]}},
+         _stack
        ) do
-    if non_500_exception?(reason) do
-      :skip
+    if log_exception?(reason) do
+      {:ok,
+       [
+         inspect(pid),
+         " running ",
+         inspect(mod),
+         extra,
+         " terminated\n",
+         conn_info(min_level, conn)
+         | Exception.format(:exit, reason, [])
+       ], conn: conn, crash_reason: reason, domain: [:cowboy]}
     else
-      ok(
-        [
-          inspect(pid),
-          " running ",
-          inspect(mod),
-          extra,
-          " terminated\n",
-          conn_info(min_level, conn)
-          | Exception.format(:exit, reason, [])
-        ],
-        crash_reason: reason
-      )
+      :skip
     end
   end
 
-  defp translate_ranch(_min_level, ref, extra, pid, reason) do
-    ok(
-      [
-        "Ranch protocol ",
-        inspect(pid),
-        " of listener ",
-        inspect(ref),
-        extra,
-        " terminated\n"
-        | Exception.format(:exit, reason, [])
-      ],
-      crash_reason: reason
-    )
+  defp translate_ranch(_min_level, ref, extra, pid, reason, stack) do
+    {:ok,
+     [
+       "Ranch protocol ",
+       inspect(pid),
+       " of listener ",
+       inspect(ref),
+       extra,
+       " terminated\n"
+       | Exception.format_exit({reason, stack})
+     ], crash_reason: reason, domain: [:cowboy]}
   end
 
-  defp non_500_exception?({%{__exception__: true} = exception, _}) do
-    Plug.Exception.status(exception) < 500
+  defp log_exception?({%{__exception__: true} = exception, _}) do
+    status_ranges =
+      Application.get_env(:plug_cowboy, :log_exceptions_with_status_code, [500..599])
+
+    status = Plug.Exception.status(exception)
+
+    Enum.any?(status_ranges, &(status in &1))
   end
 
-  defp non_500_exception?(_), do: false
+  defp log_exception?(_), do: true
 
   defp conn_info(_min_level, conn) do
     [server_info(conn), request_info(conn)]
@@ -84,14 +86,4 @@ defmodule Plug.Cowboy.Translator do
 
   defp path_to_iodata(path, ""), do: path
   defp path_to_iodata(path, qs), do: [path, ??, qs]
-
-  if Version.match?(System.version(), "~> 1.7") do
-    defp ok(message, metadata) do
-      {:ok, message, metadata}
-    end
-  else
-    defp ok(message, _metadata) do
-      {:ok, message}
-    end
-  end
 end

@@ -1,22 +1,22 @@
 defmodule Credo.Check.Refactor.CaseTrivialMatches do
-  @moduledoc false
+  use Credo.Check,
+    explanations: [
+      check: """
+      PLEASE NOTE: This check is deprecated as it might do more harm than good.
 
-  @checkdoc """
-  PLEASE NOTE: This check is deprecated as it might do more harm than good.
-
-  Related discussion: https://github.com/rrrene/credo/issues/65
-  """
-  @explanation [check: @checkdoc]
-
-  use Credo.Check
+      Related discussion: https://github.com/rrrene/credo/issues/65
+      """
+    ]
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
     Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))
   end
 
+  # TODO: consider for experimental check front-loader (ast)
   defp traverse({:case, meta, arguments} = ast, issues, issue_meta) do
     cases =
       arguments

@@ -4,19 +4,6 @@ defmodule DBConnection.Task do
 
   require DBConnection.Holder
 
-  def start_link() do
-    Task.Supervisor.start_link(name: @name)
-  end
-
-  def start_link(_, _) do
-    raise ArgumentError, "can not start the DBConnection.Task pool"
-  end
-
-  def child_spec(_, _, _) do
-    raise ArgumentError,
-      "can not create a child spec for the DBConnection.Task pool"
-  end
-
   def run_child(mod, state, fun, opts) do
     arg = [fun, self(), opts]
     {:ok, pid} = Task.Supervisor.start_child(@name, __MODULE__, :init, arg)
@@ -38,20 +25,21 @@ defmodule DBConnection.Task do
         Process.unlink(parent)
         pool_ref = DBConnection.Holder.pool_ref(pool: parent, reference: ref, holder: holder)
         checkout = {:via, __MODULE__, pool_ref}
-        _ = DBConnection.run(checkout, make_fun(fun), [holder: __MODULE__] ++ opts)
+        _ = DBConnection.run(checkout, make_fun(fun), [pool: __MODULE__] ++ opts)
         exit(:normal)
     end
   end
 
-  def checkout({:via, __MODULE__, pool_ref}, _opts) do
-    {:ok, pool_ref, _mod = :unused, _state = :unused}
+  def checkout({:via, __MODULE__, pool_ref}, _callers, _opts) do
+    {:ok, pool_ref, _mod = :unused, _idle_time = nil, _state = :unused}
   end
 
   defp make_fun(fun) when is_function(fun, 1) do
     fun
   end
+
   defp make_fun(mfargs) do
-    fn(conn) ->
+    fn conn ->
       {mod, fun, args} = mfargs
       apply(mod, fun, [conn | args])
     end

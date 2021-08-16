@@ -236,6 +236,23 @@ defmodule Plug.Router do
 
   In a nutshell, `builder_opts()` allows us to pass the options given
   when initializing the router to a `dispatch`.
+
+  ## Telemetry
+
+  The router emits the following telemetry events:
+
+    * `[:plug, :router_dispatch, :start]` - dispatched before dispatching to a matched route
+      * Measurement: `%{system_time: System.system_time}`
+      * Metadata: `%{telemetry_span_context: term(), conn: Plug.Conn.t, route: binary, router: module}`
+
+    * `[:plug, :router_dispatch, :exception]` - dispatched after exceptions on dispatching a route
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{telemetry_span_context: term(), conn: Plug.Conn.t, route: binary, router: module, kind: :throw | :error | :exit, reason: term(), stacktrace: list()}`
+
+    * `[:plug, :router_dispatch, :stop]` - dispatched after successfully dispatching a matched route
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{telemetry_span_context: term(), conn: Plug.Conn.t, route: binary, router: module}`
+
   """
 
   @doc false
@@ -248,18 +265,25 @@ defmodule Plug.Router do
 
       @doc false
       def match(conn, _opts) do
-        do_match(conn, conn.method, Enum.map(conn.path_info, &URI.decode/1), conn.host)
+        do_match(conn, conn.method, Plug.Router.Utils.decode_path_info!(conn), conn.host)
       end
 
       @doc false
       def dispatch(%Plug.Conn{} = conn, opts) do
-        {_path, fun} = Map.fetch!(conn.private, :plug_route)
+        {path, fun} = Map.fetch!(conn.private, :plug_route)
 
         try do
-          fun.(conn, opts)
+          :telemetry.span(
+            [:plug, :router_dispatch],
+            %{conn: conn, route: path, router: __MODULE__},
+            fn ->
+              conn = fun.(conn, opts)
+              {conn, %{conn: conn, route: path, router: __MODULE__}}
+            end
+          )
         catch
           kind, reason ->
-            Plug.Conn.WrapperError.reraise(conn, kind, reason, System.stacktrace())
+            Plug.Conn.WrapperError.reraise(conn, kind, reason, __STACKTRACE__)
         end
       end
 
@@ -317,8 +341,8 @@ defmodule Plug.Router do
 
     * `:assigns` - assigns values to `conn.assigns` for use in the match
 
-    * `:via` - matches the route against some specific HTTP method (specified as
-      an atom, like `:get` or `:put`.
+    * `:via` - matches the route against some specific HTTP method(s) specified
+      as an atom, like `:get` or `:put`, or a list, like `[:get, :post]`.
 
     * `:do` - contains the implementation to be invoked in case
       the route matches.
@@ -339,6 +363,14 @@ defmodule Plug.Router do
   """
   defmacro get(path, options, contents \\ []) do
     compile(:get, path, options, contents)
+  end
+
+  @doc """
+  Dispatches to the path only if the request is a HEAD request.
+  See `match/3` for more examples.
+  """
+  defmacro head(path, options, contents \\ []) do
+    compile(:head, path, options, contents)
   end
 
   @doc """
@@ -443,7 +475,7 @@ defmodule Plug.Router do
       # Delegate the matching to the match/3 macro along with the options
       # specified by Keyword.split/2.
       match path <> "/*glob", options do
-        Plug.Router.Utils.forward(
+        Plug.forward(
           var!(conn),
           var!(glob),
           @plug_forward_target,

@@ -49,13 +49,16 @@ defmodule Phoenix.Tracker do
 
   To start a tracker, first add the tracker to your supervision tree:
 
-      worker(MyTracker, [[name: MyTracker, pubsub_server: MyPubSub]])
+      children = [
+        # ...
+        {MyTracker, [name: MyTracker, pubsub_server: MyApp.PubSub]}
+      ]
 
   Next, implement `MyTracker` with support for the `Phoenix.Tracker`
   behaviour callbacks. An example of a minimal tracker could include:
 
       defmodule MyTracker do
-        @behaviour Phoenix.Tracker
+        use Phoenix.Tracker
 
         def start_link(opts) do
           opts = Keyword.merge([name: __MODULE__], opts)
@@ -101,8 +104,6 @@ defmodule Phoenix.Tracker do
   crash the tracker server, so operations that may crash the server should be
   offloaded with a `Task.Supervisor` spawned process.
   """
-  use Supervisor
-  import Supervisor.Spec
   alias Phoenix.Tracker.Shard
   require Logger
 
@@ -111,6 +112,30 @@ defmodule Phoenix.Tracker do
 
   @callback init(Keyword.t) :: {:ok, state :: term} | {:error, reason :: term}
   @callback handle_diff(%{topic => {joins :: [presence], leaves :: [presence]}}, state :: term) :: {:ok, state :: term}
+
+  defmacro __using__(_opts) do
+    quote location: :keep do
+      @behaviour Phoenix.Tracker
+
+      if Module.get_attribute(__MODULE__, :doc) == nil do
+        @doc """
+        Returns a specification to start this module under a supervisor.
+
+        See `Supervisor`.
+        """
+      end
+
+      def child_spec(init_arg) do
+        default = %{
+          id: __MODULE__,
+          start: {__MODULE__, :start_link, [init_arg]},
+          type: :supervisor
+        }
+      end
+
+      defoverridable child_spec: 1
+    end
+  end
 
   ## Client
 
@@ -266,13 +291,20 @@ defmodule Phoenix.Tracker do
       for n <- 0..(pool_size - 1) do
         shard_name = Shard.name_for_number(name, n)
         shard_opts = Keyword.put(opts, :shard_number, n)
-        worker(Phoenix.Tracker.Shard, [tracker, tracker_opts, shard_opts],
-          id: shard_name)
+
+        %{
+          id: shard_name,
+          start: {Phoenix.Tracker.Shard, :start_link, [tracker, tracker_opts, shard_opts]}
+        }
       end
 
-    supervise(shards, strategy: :one_for_one,
+    opts = [
+      strategy: :one_for_one,
       max_restarts: pool_size * 2,
-      max_seconds: 1)
+      max_seconds: 1
+    ]
+
+    Supervisor.init(shards, opts)
   end
 
   defp pool_size(tracker_name) do

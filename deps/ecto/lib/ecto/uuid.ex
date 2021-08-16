@@ -3,7 +3,7 @@ defmodule Ecto.UUID do
   An Ecto type for UUIDs strings.
   """
 
-  @behaviour Ecto.Type
+  use Ecto.Type
 
   @typedoc """
   A hex-encoded UUID string.
@@ -15,9 +15,7 @@ defmodule Ecto.UUID do
   """
   @type raw :: <<_::128>>
 
-  @doc """
-  The Ecto type.
-  """
+  @doc false
   def type, do: :uuid
 
   @doc """
@@ -136,6 +134,17 @@ defmodule Ecto.UUID do
   defp d(_),  do: throw(:error)
 
   @doc """
+  Same as `dump/1` but raises `Ecto.ArgumentError` on invalid arguments.
+  """
+  @spec dump!(t | raw | any) :: t
+  def dump!(value) do
+    case dump(value) do
+      {:ok, uuid} -> uuid
+      :error -> raise ArgumentError, "cannot dump given UUID to binary: #{inspect(value)}"
+    end
+  end
+
+  @doc """
   Converts a binary UUID into a string.
   """
   @spec load(raw | any) :: {:ok, t} | :error
@@ -147,6 +156,17 @@ defmodule Ecto.UUID do
                          "Maybe you wanted to declare :uuid as your database field?"
   end
   def load(_), do: :error
+
+  @doc """
+  Same as `load/1` but raises `Ecto.ArgumentError` on invalid arguments.
+  """
+  @spec load!(t | raw | any) :: t
+  def load!(value) do
+    case load(value) do
+      {:ok, uuid} -> uuid
+      :error -> raise ArgumentError, "cannot load given binary as UUID: #{inspect(value)}"
+    end
+  end
 
   @doc """
   Generates a version 4 (random) UUID.

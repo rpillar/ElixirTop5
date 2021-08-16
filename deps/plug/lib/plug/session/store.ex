@@ -3,6 +3,23 @@ defmodule Plug.Session.Store do
   Specification for session stores.
   """
 
+  @doc """
+  Gets the store name from an atom or a module.
+
+      iex> Plug.Session.Store.get(CustomStore)
+      CustomStore
+
+      iex> Plug.Session.Store.get(:cookie)
+      Plug.Session.COOKIE
+
+  """
+  def get(store) do
+    case Atom.to_string(store) do
+      "Elixir." <> _ -> store
+      reference -> Module.concat(Plug.Session, String.upcase(reference))
+    end
+  end
+
   @typedoc """
   The internal reference to the session in the store.
   """
@@ -24,9 +41,9 @@ defmodule Plug.Session.Store do
   Initializes the store.
 
   The options returned from this function will be given
-  to `get/3`, `put/4` and `delete/3`.
+  to `c:get/3`, `c:put/4` and `c:delete/3`.
   """
-  @callback init(Plug.opts()) :: Plug.opts()
+  @callback init(opts :: Plug.opts()) :: Plug.opts()
 
   @doc """
   Parses the given cookie.
@@ -37,7 +54,7 @@ defmodule Plug.Session.Store do
   The session id may be nil in case the cookie does not identify any
   value in the store. The session contents must be a map.
   """
-  @callback get(Plug.Conn.t(), cookie, Plug.opts()) :: {sid, session}
+  @callback get(conn :: Plug.Conn.t(), cookie, opts :: Plug.opts()) :: {sid, session}
 
   @doc """
   Stores the session associated with given session id.
@@ -45,10 +62,10 @@ defmodule Plug.Session.Store do
   If `nil` is given as id, a new session id should be
   generated and returned.
   """
-  @callback put(Plug.Conn.t(), sid, any, Plug.opts()) :: cookie
+  @callback put(conn :: Plug.Conn.t(), sid, any, opts :: Plug.opts()) :: cookie
 
   @doc """
   Removes the session associated with given session id from the store.
   """
-  @callback delete(Plug.Conn.t(), sid, Plug.opts()) :: :ok
+  @callback delete(conn :: Plug.Conn.t(), sid, opts :: Plug.opts()) :: :ok
 end

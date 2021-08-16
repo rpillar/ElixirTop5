@@ -1,24 +1,26 @@
 defmodule Credo.Check.Warning.OperationOnSameValues do
-  @moduledoc false
+  use Credo.Check,
+    base_priority: :high,
+    explanations: [
+      check: """
+      Operations on the same values always yield the same result and therefore make
+      little sense in production code.
 
-  @checkdoc """
-  Operations on the same values always yield the same result and therefore make
-  little sense in production code.
+      Examples:
 
-  Examples:
+          x == x  # always returns true
+          x <= x  # always returns true
+          x >= x  # always returns true
+          x != x  # always returns false
+          x > x   # always returns false
+          y / y   # always returns 1
+          y - y   # always returns 0
 
-      x == x  # always returns true
-      x <= x  # always returns true
-      x >= x  # always returns true
-      x != x  # always returns false
-      x > x   # always returns false
-      y / y   # always returns 1
-      y - y   # always returns 0
+      In practice they are likely the result of a debugging session or were made by
+      mistake.
+      """
+    ]
 
-  In practice they are likely the result of a debugging session or were made by
-  mistake.
-  """
-  @explanation [check: @checkdoc]
   @def_ops [:def, :defp, :defmacro]
   @ops ~w(== >= <= != > < / -)a
   @ops_and_constant_results [
@@ -32,15 +34,15 @@ defmodule Credo.Check.Warning.OperationOnSameValues do
     {:-, "Operation", 0}
   ]
 
-  use Credo.Check, base_priority: :high
-
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
     Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))
   end
 
+  # TODO: consider for experimental check front-loader (ast)
   for op <- @def_ops do
     # exclude def arguments for operators
     defp traverse(

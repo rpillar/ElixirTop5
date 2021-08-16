@@ -3,12 +3,14 @@ if Code.ensure_loaded?(Phoenix.HTML) do
     def to_form(changeset, opts) do
       %{params: params, data: data} = changeset
       {name, opts} = Keyword.pop(opts, :as)
+
       name = to_string(name || form_for_name(data))
+      id = Keyword.get(opts, :id) || name
 
       %Phoenix.HTML.Form{
         source: changeset,
         impl: __MODULE__,
-        id: name,
+        id: id,
         name: name,
         errors: form_for_errors(changeset),
         data: data,
@@ -20,8 +22,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
 
     def to_form(%{action: parent_action} = source, form, field, opts) do
       if Keyword.has_key?(opts, :default) do
-        raise ArgumentError, ":default is not supported on inputs_for with changesets. " <>
-                             "The default value must be set in the changeset data"
+        raise ArgumentError,
+              ":default is not supported on inputs_for with changesets. " <>
+                "The default value must be set in the changeset data"
       end
 
       {prepend, opts} = Keyword.pop(opts, :prepend, [])
@@ -29,21 +32,26 @@ if Code.ensure_loaded?(Phoenix.HTML) do
       {name, opts} = Keyword.pop(opts, :as)
       {id, opts} = Keyword.pop(opts, :id)
 
-      id    = to_string(id || form.id <> "_#{field}")
-      name  = to_string(name || form.name <> "[#{field}]")
+      id = to_string(id || form.id <> "_#{field}")
+      name = to_string(name || form.name <> "[#{field}]")
 
       case find_inputs_for_type!(source, field) do
         {:one, cast, module} ->
           changesets =
             case Map.fetch(source.changes, field) do
-              {:ok, nil} -> []
-              {:ok, map} -> [validate_map!(map, field)]
-              _  -> [validate_map!(assoc_from_data(source.data, field), field) || module.__struct__]
+              {:ok, nil} ->
+                []
+
+              {:ok, map} ->
+                [validate_map!(map, field)]
+
+              _ ->
+                [validate_map!(assoc_from_data(source.data, field), field) || module.__struct__]
             end
 
           for changeset <- skip_replaced(changesets) do
-            %{data: data, params: params} = changeset =
-              to_changeset(changeset, parent_action, module, cast)
+            %{data: data, params: params} =
+              changeset = to_changeset(changeset, parent_action, module, cast)
 
             %Phoenix.HTML.Form{
               source: changeset,
@@ -61,8 +69,7 @@ if Code.ensure_loaded?(Phoenix.HTML) do
         {:many, cast, module} ->
           changesets =
             validate_list!(Map.get(source.changes, field), field) ||
-            validate_list!(assoc_from_data(source.data, field), field) ||
-            []
+              validate_list!(assoc_from_data(source.data, field), field) || []
 
           changesets =
             if form.params[Atom.to_string(field)] do
@@ -74,8 +81,9 @@ if Code.ensure_loaded?(Phoenix.HTML) do
           changesets = skip_replaced(changesets)
 
           for {changeset, index} <- Enum.with_index(changesets) do
-            %{data: data, params: params} = changeset =
-              to_changeset(changeset, parent_action, module, cast)
+            %{data: data, params: params} =
+              changeset = to_changeset(changeset, parent_action, module, cast)
+
             index_string = Integer.to_string(index)
 
             %Phoenix.HTML.Form{
@@ -94,20 +102,30 @@ if Code.ensure_loaded?(Phoenix.HTML) do
       end
     end
 
-    def input_value(%{changes: changes, data: data}, %{params: params}, field, computed \\ nil) do
+    def input_value(data, form, field, computed \\ nil)
+
+    def input_value(%{changes: changes, data: data}, %{params: params}, field, computed)
+        when is_atom(field) do
       case Map.fetch(changes, field) do
         {:ok, value} ->
           value
+
         :error ->
           case Map.fetch(params, Atom.to_string(field)) do
             {:ok, value} ->
               value
+
             :error when is_nil(computed) ->
               Map.get(data, field)
+
             :error ->
               computed
           end
       end
+    end
+
+    def input_value(_data, _form, field, _computed) do
+      raise ArgumentError, "expected field to be an atom, got: #{inspect(field)}"
     end
 
     def input_type(%{types: types}, _, field) do
@@ -115,37 +133,39 @@ if Code.ensure_loaded?(Phoenix.HTML) do
       type = if Ecto.Type.primitive?(type), do: type, else: type.type
 
       case type do
-        :integer        -> :number_input
-        :float          -> :number_input
-        :decimal        -> :number_input
-        :boolean        -> :checkbox
-        :date           -> :date_select
-        :time           -> :time_select
-        :utc_datetime   -> :datetime_select
+        :integer -> :number_input
+        :boolean -> :checkbox
+        :date -> :date_select
+        :time -> :time_select
+        :utc_datetime -> :datetime_select
         :naive_datetime -> :datetime_select
-        _               -> :text_input
+        _ -> :text_input
       end
     end
 
     def input_validations(%{required: required, validations: validations} = changeset, _, field) do
       [required: field in required] ++
-        for({key, validation} <- validations,
+        for {key, validation} <- validations,
             key == field,
             attr <- validation_to_attrs(validation, field, changeset),
-            do: attr)
+            do: attr
     end
 
     defp assoc_from_data(data, field) do
       assoc_from_data(data, Map.fetch!(data, field), field)
     end
+
     defp assoc_from_data(%{__meta__: %{state: :built}}, %Ecto.Association.NotLoaded{}, _field) do
       nil
     end
+
     defp assoc_from_data(%{__struct__: struct}, %Ecto.Association.NotLoaded{}, field) do
-      raise ArgumentError, "using inputs_for for association `#{field}` " <>
-        "from `#{inspect struct}` but it was not loaded. Please preload your " <>
-        "associations before using them in inputs_for"
+      raise ArgumentError,
+            "using inputs_for for association `#{field}` " <>
+              "from `#{inspect(struct)}` but it was not loaded. Please preload your " <>
+              "associations before using them in inputs_for"
     end
+
     defp assoc_from_data(_data, value, _field) do
       value
     end
@@ -185,64 +205,93 @@ if Code.ensure_loaded?(Phoenix.HTML) do
     end
 
     defp step_for(:integer), do: [step: 1]
-    defp step_for(_other),   do: [step: "any"]
+    defp step_for(_other), do: [step: "any"]
 
     defp max_for(type, opts) do
       cond do
-        max = type == :integer && Keyword.get(opts, :less_than) ->
-          [max: max - 1]
-        max = Keyword.get(opts, :less_than_or_equal_to) ->
-          [max: max]
-        true ->
-          []
+        max = type == :integer && Keyword.get(opts, :less_than) -> [max: max - 1]
+        max = Keyword.get(opts, :less_than_or_equal_to) -> [max: max]
+        true -> []
       end
     end
 
     defp min_for(type, opts) do
       cond do
-        min = type == :integer && Keyword.get(opts, :greater_than) ->
-          [min: min + 1]
-        min = Keyword.get(opts, :greater_than_or_equal_to) ->
-          [min: min]
-        true ->
-          []
+        min = type == :integer && Keyword.get(opts, :greater_than) -> [min: min + 1]
+        min = Keyword.get(opts, :greater_than_or_equal_to) -> [min: min]
+        true -> []
       end
     end
 
     defp find_inputs_for_type!(changeset, field) do
       case Map.fetch(changeset.types, field) do
-        {:ok, {tag, %{cardinality: cardinality, on_cast: cast, related: module}}} when tag in [:embed, :assoc] ->
+        {:ok, {tag, %{cardinality: cardinality, on_cast: cast, related: module}}}
+        when tag in [:embed, :assoc] ->
           {cardinality, cast, module}
+
         _ ->
+          struct = changeset.data.__struct__
+
           raise ArgumentError,
-            "could not generate inputs for #{inspect field} from #{inspect changeset.data.__struct__}. " <>
-            "Check the field exists and it is one of embeds_one, embeds_many, has_one, " <>
-            "has_many, belongs_to or many_to_many"
+                "could not generate inputs for #{inspect(field)} from #{inspect(struct)}. " <>
+                  "Check the field exists and it is one of embeds_one, embeds_many, has_one, " <>
+                  "has_many, belongs_to or many_to_many"
       end
     end
 
     defp to_changeset(%Ecto.Changeset{} = changeset, parent_action, _module, _cast),
       do: apply_action(changeset, parent_action)
+
     defp to_changeset(%{} = data, parent_action, _module, cast) when is_function(cast, 2),
-      do: apply_action(cast.(data, %{}), parent_action)
+      do: apply_action(cast!(cast, data), parent_action)
+
+    defp to_changeset(%{} = data, parent_action, _module, {module, func, arguments} = mfa)
+         when is_atom(module) and is_atom(func) and is_list(arguments),
+         do: apply_action(apply!(mfa, data), parent_action)
+
     defp to_changeset(%{} = data, parent_action, _module, nil),
       do: apply_action(Ecto.Changeset.change(data), parent_action)
+
+    defp cast!(cast, data) do
+      case cast.(data, %{}) do
+        %Ecto.Changeset{} = changeset ->
+          changeset
+
+        other ->
+          raise "expected on_cast/2 callback #{inspect(cast)} to return an Ecto.Changeset, " <>
+                  "got: #{inspect(other)}"
+      end
+    end
+
+    defp apply!({module, func, arguments}, data) do
+      case apply(module, func, [data, %{} | arguments]) do
+        %Ecto.Changeset{} = changeset ->
+          changeset
+
+        other ->
+          raise "expected #{module}.#{func} to return an Ecto.Changeset, " <>
+                  "got: #{inspect(other)}"
+      end
+    end
 
     # If the parent changeset had no action, we need to remove the action
     # from children changeset so we ignore all errors accordingly.
     defp apply_action(changeset, nil),
       do: %{changeset | action: nil}
+
     defp apply_action(changeset, _action),
       do: changeset
 
     defp validate_list!(value, _what) when is_list(value) or is_nil(value), do: value
+
     defp validate_list!(value, what) do
-      raise ArgumentError, "expected #{what} to be a list, got: #{inspect value}"
+      raise ArgumentError, "expected #{what} to be a list, got: #{inspect(value)}"
     end
 
     defp validate_map!(value, _what) when is_map(value) or is_nil(value), do: value
+
     defp validate_map!(value, what) do
-      raise ArgumentError, "expected #{what} to be a map/struct, got: #{inspect value}"
+      raise ArgumentError, "expected #{what} to be a map/struct, got: #{inspect(value)}"
     end
 
     defp form_for_errors(%{action: nil}), do: []
@@ -256,6 +305,7 @@ if Code.ensure_loaded?(Phoenix.HTML) do
     else
       keys -> for k <- keys, v = Map.fetch!(data, k), do: {k, v}
     end
+
     defp form_for_hidden(_), do: []
 
     defp form_for_name(%{__struct__: module}) do
@@ -264,6 +314,7 @@ if Code.ensure_loaded?(Phoenix.HTML) do
       |> List.last()
       |> Macro.underscore()
     end
+
     defp form_for_name(_) do
       raise ArgumentError, "non-struct data in changeset requires the :as option to be given"
     end

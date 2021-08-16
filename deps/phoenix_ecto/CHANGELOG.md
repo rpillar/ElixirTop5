@@ -1,7 +1,33 @@
 # Changelog
 
+## v4.3.0
+
+* Enhancements
+  * Support `:phoenix_html` v3.0
+
+## v4.2.1
+
+* Bug fixes
+  * Only check for storage if we cannot check for migrations. This reduces the amount of operations for successful cases (which are the most common) and avoid issues for when we can't check the storage in the first place
+
+## v4.2.0
+
+* Enhancements
+  * Support cast_assoc `with` MFA option on inputs_for
+
+* Bug fixes
+  * Do not treat `InvalidChangesetError` as 422 as those are not logged
+  * Fix status code in check status exceptions to 503
+  * Use text for floats and decimals as the `input_type` - numerics have many usability issues that led them to not be widely used
+
+## v4.1.0
+
+* Enhancements
+  * Add `Phoenix.Ecto.CheckRepoStatus` plug
+
 ## v4.0.0
 
+* Enhancements
   * Implement `Plug.Status` for `Ecto.StaleEntryError`
   * Support Ecto 3.0
 
@@ -16,7 +42,7 @@
 ## v3.3.0
 
 * Enhancements
-  * Support concurrent and transactional end-to-end tests for external   HTTP clients using the new `:at` and `:repo` options to the `Phoenix.Ecto.SQL.Sandbox` plug
+  * Support concurrent and transactional end-to-end tests for external HTTP clients using the new `:at` and `:repo` options to the `Phoenix.Ecto.SQL.Sandbox` plug
 
 ## v3.2.3
 

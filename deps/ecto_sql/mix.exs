@@ -1,29 +1,35 @@
 defmodule EctoSQL.MixProject do
   use Mix.Project
 
-  @version "3.1.1"
-  @adapters ~w(pg mysql myxql)
+  @source_url "https://github.com/elixir-ecto/ecto_sql"
+  @version "3.6.2"
+  @adapters ~w(pg myxql tds)
 
   def project do
     [
       app: :ecto_sql,
       version: @version,
-      elixir: "~> 1.5",
+      elixir: "~> 1.8",
       deps: deps(),
       test_paths: test_paths(System.get_env("ECTO_ADAPTER")),
       xref: [
         exclude: [
-          Mariaex,
-          Ecto.Adapters.MySQL.Connection,
           MyXQL,
           Ecto.Adapters.MyXQL.Connection,
           Postgrex,
-          Ecto.Adapters.Postgres.Connection
+          Ecto.Adapters.Postgres.Connection,
+          Tds,
+          Tds.Ecto.UUID,
+          Ecto.Adapters.Tds.Connection
         ]
       ],
 
       # Custom testing
-      aliases: ["test.all": ["test", "test.adapters"], "test.adapters": &test_adapters/1],
+      aliases: [
+        "test.all": ["test", "test.adapters", "test.as_a_dep"],
+        "test.adapters": &test_adapters/1,
+        "test.as_a_dep": &test_as_a_dep/1
+      ],
       preferred_cli_env: ["test.all": :test, "test.adapters": :test],
 
       # Hex
@@ -38,7 +44,7 @@ defmodule EctoSQL.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :eex],
       env: [postgres_map_type: "jsonb"],
       mod: {Ecto.Adapters.SQL.Application, []}
     ]
@@ -50,16 +56,16 @@ defmodule EctoSQL.MixProject do
       {:telemetry, "~> 0.4.0"},
 
       # Drivers
-      {:db_connection, "~> 2.0"},
+      {:db_connection, "~> 2.2"},
       postgrex_dep(),
-      mariaex_dep(),
       myxql_dep(),
+      tds_dep(),
 
       # Bring something in for JSON during tests
       {:jason, ">= 0.0.0", only: [:test, :docs]},
 
       # Docs
-      {:ex_doc, "~> 0.19", only: :docs},
+      {:ex_doc, "~> 0.21", only: :docs},
 
       # Benchmarks
       {:benchee, "~> 0.11.0", only: :bench},
@@ -71,7 +77,7 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("ECTO_PATH") do
       {:ecto, path: path}
     else
-      {:ecto, "~> 3.1.0"}
+      {:ecto, "~> 3.6.2"}
     end
   end
 
@@ -79,15 +85,7 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("POSTGREX_PATH") do
       {:postgrex, path: path}
     else
-      {:postgrex, "~> 0.14.0", optional: true}
-    end
-  end
-
-  defp mariaex_dep do
-    if path = System.get_env("MARIAEX_PATH") do
-      {:mariaex, path: path}
-    else
-      {:mariaex, "~> 0.9.1", optional: true}
+      {:postgrex, "~> 0.15.0 or ~> 1.0", optional: true}
     end
   end
 
@@ -95,22 +93,55 @@ defmodule EctoSQL.MixProject do
     if path = System.get_env("MYXQL_PATH") do
       {:myxql, path: path}
     else
-      {:myxql, "~> 0.2.0", optional: true}
+      {:myxql, "~> 0.4.0 or ~> 0.5.0", optional: true}
+    end
+  end
+
+  defp tds_dep do
+    if path = System.get_env("TDS_PATH") do
+      {:tds, path: path}
+    else
+      {:tds, "~> 2.1.1", optional: true}
     end
   end
 
   defp test_paths(adapter) when adapter in @adapters, do: ["integration_test/#{adapter}"]
-  defp test_paths(_), do: ["test"]
+  defp test_paths(nil), do: ["test"]
+  defp test_paths(other), do: raise("unknown adapter #{inspect(other)}")
 
   defp package do
     [
       maintainers: ["Eric Meadows-Jönsson", "José Valim", "James Fish", "Michał Muskała"],
-      licenses: ["Apache 2.0"],
-      links: %{"GitHub" => "https://github.com/elixir-ecto/ecto_sql"},
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => @source_url},
       files:
         ~w(.formatter.exs mix.exs README.md CHANGELOG.md lib) ++
           ~w(integration_test/sql integration_test/support)
     ]
+  end
+
+  defp test_as_a_dep(args) do
+    IO.puts("==> Compiling ecto_sql from a dependency")
+    File.rm_rf!("tmp/as_a_dep")
+    File.mkdir_p!("tmp/as_a_dep")
+
+    File.cd!("tmp/as_a_dep", fn ->
+      File.write!("mix.exs", """
+      defmodule DepsOnEctoSQL.MixProject do
+        use Mix.Project
+
+        def project do
+          [
+            app: :deps_on_ecto_sql,
+            version: "0.0.1",
+            deps: [{:ecto_sql, path: "../.."}]
+          ]
+        end
+      end
+      """)
+
+      mix_cmd_with_status_check(["do", "deps.get,", "compile", "--force" | args])
+    end)
   end
 
   defp test_adapters(args) do
@@ -118,15 +149,20 @@ defmodule EctoSQL.MixProject do
   end
 
   defp env_run(adapter, args) do
-    args = if IO.ANSI.enabled?(), do: ["--color" | args], else: ["--no-color" | args]
-
     IO.puts("==> Running tests for ECTO_ADAPTER=#{adapter} mix test")
 
-    {_, res} =
-      System.cmd("mix", ["test" | args],
-        into: IO.binstream(:stdio, :line),
-        env: [{"ECTO_ADAPTER", adapter}]
-      )
+    mix_cmd_with_status_check(
+      ["test", ansi_option() | args],
+      env: [{"ECTO_ADAPTER", adapter}]
+    )
+  end
+
+  defp ansi_option do
+    if IO.ANSI.enabled?(), do: "--color", else: "--no-color"
+  end
+
+  defp mix_cmd_with_status_check(args, opts \\ []) do
+    {_, res} = System.cmd("mix", args, [into: IO.binstream(:stdio, :line)] ++ opts)
 
     if res > 0 do
       System.at_exit(fn _ -> exit({:shutdown, 1}) end)
@@ -138,7 +174,9 @@ defmodule EctoSQL.MixProject do
       main: "Ecto.Adapters.SQL",
       source_ref: "v#{@version}",
       canonical: "http://hexdocs.pm/ecto_sql",
-      source_url: "https://github.com/elixir-ecto/ecto_sql",
+      source_url: @source_url,
+      extras: ["CHANGELOG.md"],
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       groups_for_modules: [
         # Ecto.Adapters.SQL,
         # Ecto.Adapters.SQL.Sandbox,
@@ -146,8 +184,8 @@ defmodule EctoSQL.MixProject do
         # Ecto.Migrator,
 
         "Built-in adapters": [
-          Ecto.Adapters.MySQL,
           Ecto.Adapters.MyXQL,
+          Ecto.Adapters.Tds,
           Ecto.Adapters.Postgres
         ],
         "Adapter specification": [

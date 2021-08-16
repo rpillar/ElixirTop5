@@ -76,16 +76,15 @@ defmodule Ecto.Integration.MigratorTest do
     assert migrated_versions(PoolRepo) == []
   end
 
+  @tag :prefix
   test "does not commit migration if insert into schema migration fails" do
     # First we create a new schema migration table in another prefix
     assert up(PoolRepo, 33, AnotherSchemaMigration, log: false) == :ok
     assert migrated_versions(PoolRepo) == [33]
 
-    assert capture_log(fn ->
-      catch_error(up(PoolRepo, 34, GoodMigration, log: false, prefix: "bad_schema_migrations"))
-      catch_error(PoolRepo.all("good_migration"))
-      catch_error(PoolRepo.all("good_migration", prefix: "bad_schema_migrations"))
-    end) =~ "Could not update schema migrations"
+    catch_error(up(PoolRepo, 34, GoodMigration, log: false, prefix: "bad_schema_migrations"))
+    catch_error(PoolRepo.all("good_migration"))
+    catch_error(PoolRepo.all("good_migration", prefix: "bad_schema_migrations"))
 
     assert down(PoolRepo, 33, AnotherSchemaMigration, log: false) == :ok
   end
@@ -173,16 +172,17 @@ defmodule Ecto.Integration.MigratorTest do
     end
   end
 
+  @tag :lock_for_migrations
   test "raises when connection pool is too small" do
     config = Application.fetch_env!(:ecto_sql, PoolRepo)
     config = Keyword.merge(config, pool_size: 1)
     Application.put_env(:ecto_sql, __MODULE__.SingleConnectionRepo, config)
 
     defmodule SingleConnectionRepo do
-      use Ecto.Repo, otp_app: :ecto_sql, adapter: PoolRepo.__adapter__
+      use Ecto.Repo, otp_app: :ecto_sql, adapter: PoolRepo.__adapter__()
     end
 
-    {:ok, _pid} = SingleConnectionRepo.start_link
+    {:ok, _pid} = SingleConnectionRepo.start_link()
 
     in_tmp fn path ->
       exception_message = ~r/Migrations failed to run because the connection pool size is less than 2/
@@ -199,10 +199,10 @@ defmodule Ecto.Integration.MigratorTest do
     Application.put_env(:ecto_sql, __MODULE__.SingleConnectionNoLockRepo, config)
 
     defmodule SingleConnectionNoLockRepo do
-      use Ecto.Repo, otp_app: :ecto_sql, adapter: PoolRepo.__adapter__
+      use Ecto.Repo, otp_app: :ecto_sql, adapter: PoolRepo.__adapter__()
     end
 
-    {:ok, _pid} = SingleConnectionNoLockRepo.start_link
+    {:ok, _pid} = SingleConnectionNoLockRepo.start_link()
 
     in_tmp fn path ->
       run(SingleConnectionNoLockRepo, path, :up, all: true, log: false)

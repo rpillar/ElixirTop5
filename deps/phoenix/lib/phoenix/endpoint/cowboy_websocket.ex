@@ -13,20 +13,21 @@ defmodule Phoenix.Endpoint.CowboyWebSocket do
     conn = @connection.conn(req, transport)
 
     try do
-      case Phoenix.Transports.WebSocket.connect(conn, endpoint, handler, opts) do
-        {:ok, %{adapter: {@connection, req}}, args} ->
+      case module.connect(conn, endpoint, handler, opts) do
+        {:ok, %Plug.Conn{adapter: {@connection, req}} = conn, args} ->
           timeout = Keyword.fetch!(opts, :timeout)
+          req = copy_resp_headers(conn, req)
           {:upgrade, :protocol, __MODULE__, req, {handler, args, timeout}}
 
-        {:error, %{adapter: {@connection, req}}} ->
-          {:shutdown, req, :no_state}
+        {:error, %Plug.Conn{adapter: {@connection, req}} = conn} ->
+          {:shutdown, copy_resp_headers(conn, req), :no_state}
       end
     catch
       kind, reason ->
         # Although we are not performing a call, we are using the call
         # function for now so it is properly handled in error reports.
         mfa = {module, :call, [conn, args]}
-        {:upgrade, :protocol, __MODULE__, req, {:error, mfa, kind, reason, System.stacktrace()}}
+        {:upgrade, :protocol, __MODULE__, req, {:error, mfa, kind, reason, __STACKTRACE__}}
     after
       receive do
         @already_sent -> :ok
@@ -71,6 +72,12 @@ defmodule Phoenix.Endpoint.CowboyWebSocket do
   defp format_reason(:exit, reason, _), do: reason
   defp format_reason(:throw, reason, stack), do: {{:nocatch, reason}, stack}
   defp format_reason(:error, reason, stack), do: {reason, stack}
+
+  defp copy_resp_headers(%Plug.Conn{} = conn, req) do
+    Enum.reduce(conn.resp_headers, req, fn {key, val}, acc ->
+      :cowboy_req.set_resp_header(key, val, acc)
+    end)
+  end
 
   ## Websocket callbacks
 

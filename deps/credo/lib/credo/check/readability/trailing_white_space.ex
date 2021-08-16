@@ -1,30 +1,30 @@
 defmodule Credo.Check.Readability.TrailingWhiteSpace do
-  @moduledoc false
+  use Credo.Check,
+    base_priority: :low,
+    tags: [:formatter],
+    param_defaults: [
+      ignore_strings: true
+    ],
+    explanations: [
+      check: """
+      There should be no white-space (i.e. tabs, spaces) at the end of a line.
 
-  @checkdoc """
-  There should be no white-space (i.e. tabs, spaces) at the end of a line.
-
-  Most text editors provide a way to remove them automatically.
-  """
-  @explanation [
-    check: @checkdoc,
-    params: [
-      ignore_strings: "Set to `false` to check lines that are strings or in heredocs"
+      Most text editors provide a way to remove them automatically.
+      """,
+      params: [
+        ignore_strings: "Set to `false` to check lines that are strings or in heredocs"
+      ]
     ]
-  ]
-  @default_params [
-    ignore_strings: true
-  ]
-
-  use Credo.Check, base_priority: :low
 
   alias Credo.Code
   alias Credo.Code.Strings
+  alias Credo.Code.Heredocs
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
-    ignore_strings = Params.get(params, :ignore_strings, @default_params)
+    ignore_strings = Params.get(params, :ignore_strings, __MODULE__)
 
     source_file
     |> to_lines(ignore_strings)
@@ -33,8 +33,8 @@ defmodule Credo.Check.Readability.TrailingWhiteSpace do
 
   defp to_lines(source_file, true) do
     source_file
-    |> SourceFile.source()
-    |> Strings.replace_with_spaces(".")
+    |> Strings.replace_with_spaces(".", ".")
+    |> Heredocs.replace_with_spaces(".", ".", ".", source_file.filename)
     |> Code.to_lines()
   end
 
@@ -44,7 +44,7 @@ defmodule Credo.Check.Readability.TrailingWhiteSpace do
 
   defp traverse_line([{line_no, line} | tail], issues, issue_meta) do
     issues =
-      case Regex.run(~r/\s+$/, line, return: :index) do
+      case Regex.run(~r/\h+$/u, line, return: :index) do
         [{column, line_length}] ->
           [issue_for(issue_meta, line_no, column + 1, line_length) | issues]
 

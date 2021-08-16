@@ -1,15 +1,16 @@
 Ecto SQL
 =========
-[![Build Status](https://travis-ci.org/elixir-ecto/ecto_sql.svg?branch=master)](https://travis-ci.org/elixir-ecto/ecto_sql)
+
+[![Build Status](https://github.com/elixir-ecto/ecto_sql/workflows/CI/badge.svg)](https://github.com/elixir-ecto/ecto_sql/actions)
 
 Ecto SQL ([documentation](https://hexdocs.pm/ecto_sql)) provides building blocks for writing SQL adapters for Ecto. It features:
 
   * The Ecto.Adapters.SQL module as an entry point for all SQL-based adapters
-  * Default implementations for Postgres (Ecto.Adapters.Postgres) and MySQL (Ecto.Adapters.MyXQL)
-  * A test sandbox (Ecto.Adapters.SQL.Sandbox) that concurrently run database tests inside transactions
+  * Default implementations for Postgres (Ecto.Adapters.Postgres), MySQL (Ecto.Adapters.MyXQL), and MSSQL (Ecto.Adapters.Tds)
+  * A test sandbox (Ecto.Adapters.SQL.Sandbox) that concurrently runs database tests inside transactions
   * Support for database migrations via Mix tasks
 
-To learn more about getting started, [see the Ecto repository](https://github.com/elixir-ecto/ecto). 
+To learn more about getting started, [see the Ecto repository](https://github.com/elixir-ecto/ecto).
 
 ## Running tests
 
@@ -20,23 +21,42 @@ Clone the repo and fetch its dependencies:
     $ mix deps.get
     $ mix test.all
 
-Note that `mix test.all` runs the tests in `test/` and in the `integration_test` folder of the `ecto` dependency.
+Note that `mix test.all` runs the tests in `test/` and the `integration_test`s for each adapter: `pg`, `myxql` and `tds`.
 
 You can also use a local Ecto checkout if desired:
 
     $ ECTO_PATH=../ecto mix test.all
 
-You can run tests against an specific Ecto adapter by using the `ECTO_ADAPTER` environment variable:
+You can run tests against a specific Ecto adapter by using the `ECTO_ADAPTER` environment variable:
 
     $ ECTO_ADAPTER=pg mix test
 
-## Copyright and License
+MySQL and PostgreSQL can be installed directly on most systems. For MSSQL, you may need to run it as a Docker image:
 
-"Ecto" and the Ecto logo are Copyright (c) 2012 Plataformatec.
+    docker run -d -p 1433:1433 --name mssql -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=some!Password' mcr.microsoft.com/mssql/server:2017-latest
 
-The source code is under the Apache 2 License.
+### Running containerized tests
 
-Copyright (c) 2012 Plataformatec
+It is also possible to run the integration tests under a containerized environment using [earthly](https://earthly.dev/get-earthly):
+
+    $ earthly -P +all
+
+You can also use this to interactively debug any failing integration tests using the corresponding commands:
+
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg MYSQL=5.7 +integration-test-mysql
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg MSSQL=2019  +integration-test-mssql
+    $ earthly -P -i --build-arg ELIXIR_BASE=1.8.2-erlang-20.3.8.26-alpine-3.11.6 --build-arg POSTGRES=11.11 +integration-test-postgres
+
+Then once you enter the containerized shell, you can inspect the underlying databases with the respective commands:
+
+    PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres ecto_test
+    MYSQL_PASSWORD=root mysql -h 127.0.0.1 -uroot -proot ecto_test
+    sqlcmd -U sa -P 'some!Password'
+
+## License
+
+Copyright (c) 2012 Plataformatec \
+Copyright (c) 2020 Dashbit
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

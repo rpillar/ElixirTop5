@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.14.3 (2020-12-12)
+
+* Bug fixes
+  * Fix warnings on Elixir v1.12
+
+## v2.14.2 (2020-04-30)
+
+* Deprecations
+  * Deprecate `Phoenix`-specific assigns `:view_module` and `:view_template`
+
+## v2.14.1 (2020-03-20)
+
+* Enhancements
+  * Add `Phoenix.HTML.Form.options_for_select/2`
+  * Add `Phoenix.HTML.Form.inputs_for/3`
+
+* Bug fixes
+  * Disable hidden input for disabled checkboxes
+
+## v2.14.0 (2020-01-28)
+
+* Enhancements
+  * Remove enforce_utf8 workaround on forms as it is no longer required by browser
+  * Remove support tuple-based date/time with microseconds calendar types
+  * Allow strings as first element in `content_tag`
+  * Add `:srcset` support to `img_tag`
+  * Allow `inputs_for` to skip hidden fields
+
+## v2.13.4 (2020-01-28)
+
+* Bug fixes
+  * Fix invalid :line in Elixir v1.10.0
+
+## v2.13.3 (2019-05-31)
+
+* Enhancements
+  * Add atom support to FormData
+
+* Bug fixes
+  * Keep proper line numbers on .eex templates for proper coverage
+
 ## v2.13.2 (2019-03-29)
 
 * Bug fixes

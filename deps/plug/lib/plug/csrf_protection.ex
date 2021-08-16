@@ -24,6 +24,10 @@ defmodule Plug.CSRFProtection do
   arbitrary content-type, making JSON exploitable. More info:
   https://bugs.chromium.org/p/chromium/issues/detail?id=490015
 
+  Finally, we recommend developers to invoke `delete_csrf_token/0`
+  every time after they log a user in, to avoid CSRF fixation
+  attacks.
+
   ## Token generation
 
   This plug won't generate tokens automatically. Instead, tokens
@@ -104,14 +108,22 @@ defmodule Plug.CSRFProtection do
   alias Plug.Crypto.KeyGenerator
   alias Plug.Crypto.MessageVerifier
 
+  @behaviour Plug
   @unprotected_methods ~w(HEAD GET OPTIONS)
+  @digest Base.url_encode64("HS256", padding: false) <> "."
+
+  # The token size value should not generate padding
+  @token_size 18
+  @encoded_token_size 24
+  @double_encoded_token_size 32
 
   defmodule InvalidCSRFTokenError do
     @moduledoc "Error raised when CSRF token is invalid."
 
     message =
-      "invalid CSRF (Cross Site Request Forgery) token, make sure all " <>
-        "requests include a valid '_csrf_token' param or 'x-csrf-token' header"
+      "invalid CSRF (Cross Site Request Forgery) token, please make sure that:\n\n" <>
+        "  * The session cookie is being sent and session is loaded\n" <>
+        "  * The request include a valid '_csrf_token' param or 'x-csrf-token' header"
 
     defexception message: message, plug_status: 403
   end
@@ -133,10 +145,31 @@ defmodule Plug.CSRFProtection do
   Load CSRF state into the process dictionary.
 
   This can be used to load CSRF state into another process.
-  See `dump_state/0` for dumping it.
+  See `dump_state/0` and `dump_state_from_session/2` for dumping it.
+
+  ## Examples
+
+  To dump the state from the current process and load into another one:
+
+      csrf_state = Plug.CSRFProtection.dump_state()
+      secret_key_base = conn.secret_key_base
+
+      Task.async(fn ->
+        Plug.CSRFProtection.load_state(secret_key_base, csrf_state)
+      end)
+
+  If you have a session but the CSRF state was not loaded into the
+  current process, you can dump the state from the session:
+
+      csrf_state = Plug.CSRFProtection.dump_state_from_session(session["_csrf_token"])
+
+      Task.async(fn ->
+        Plug.CSRFProtection.load_state(secret_key_base, csrf_state)
+      end)
+
   """
-  def load_state(secret_key_base, csrf_token) when is_binary(csrf_token) or is_nil(csrf_token) do
-    Process.put(:plug_unmasked_csrf_token, csrf_token)
+  def load_state(secret_key_base, csrf_state) when is_binary(csrf_state) or is_nil(csrf_state) do
+    Process.put(:plug_unmasked_csrf_token, csrf_state)
     Process.put(:plug_csrf_token_per_host, %{secret_key_base: secret_key_base})
     :ok
   end
@@ -144,10 +177,39 @@ defmodule Plug.CSRFProtection do
   @doc """
   Dump CSRF state so it can be loaded in another process.
 
-  See `load_state/2`. If a token was not yet computed, it will be.
+  This function must be called after the `Plug.CSRFProtection`
+  plug is invoked. If a token was not yet computed, it will be.
+
+  See `load_state/2` for more information.
   """
   def dump_state() do
     unmasked_csrf_token()
+  end
+
+  @doc """
+  Dumps the CSRF state from the connection.
+
+  It expects the value of `get_session(conn, "_csrf_token")`.
+  It returns `nil` if there is no state in the session.
+  """
+  def dump_state_from_session(session_token) do
+    if is_binary(session_token) and byte_size(session_token) == @encoded_token_size do
+      session_token
+    end
+  end
+
+  @doc """
+  Validates the `state` is valid against the given `csrf_token`.
+  """
+  def valid_state_and_csrf_token?(state, csrf_token) do
+    with <<state_token::@encoded_token_size-binary>> <-
+           state,
+         <<user_token::@double_encoded_token_size-binary, mask::@encoded_token_size-binary>> <-
+           csrf_token do
+      valid_masked_token?(state_token, user_token, mask)
+    else
+      _ -> false
+    end
   end
 
   @doc """
@@ -224,12 +286,7 @@ defmodule Plug.CSRFProtection do
 
   ## Plug
 
-  @behaviour Plug
-  @digest Base.url_encode64("HS256", padding: false) <> "."
-  @token_size 16
-  @encoded_token_size 24
-  @double_encoded_token_size 32
-
+  @impl true
   def init(opts) do
     session_key = Keyword.get(opts, :session_key, "_csrf_token")
     mode = Keyword.get(opts, :with, :exception)
@@ -237,8 +294,9 @@ defmodule Plug.CSRFProtection do
     {session_key, mode, allow_hosts}
   end
 
+  @impl true
   def call(conn, {session_key, mode, allow_hosts}) do
-    csrf_token = get_csrf_from_session(conn, session_key)
+    csrf_token = dump_state_from_session(get_session(conn, session_key))
     load_state(conn.secret_key_base, csrf_token)
 
     conn =
@@ -262,24 +320,17 @@ defmodule Plug.CSRFProtection do
 
   ## Verification
 
-  defp get_csrf_from_session(conn, session_key) do
-    csrf_token = get_session(conn, session_key)
-
-    if is_binary(csrf_token) and byte_size(csrf_token) == @encoded_token_size do
-      csrf_token
-    end
-  end
-
   defp verified_request?(conn, csrf_token, allow_hosts) do
     conn.method in @unprotected_methods ||
-      valid_csrf_token?(conn, csrf_token, conn.params["_csrf_token"], allow_hosts) ||
-      valid_csrf_token?(conn, csrf_token, first_x_csrf_token(conn), allow_hosts) ||
+      valid_csrf_token?(conn, csrf_token, body_csrf_token(conn), allow_hosts) ||
+      valid_csrf_token?(conn, csrf_token, header_csrf_token(conn), allow_hosts) ||
       skip_csrf_protection?(conn)
   end
 
-  defp first_x_csrf_token(conn) do
-    List.first(get_req_header(conn, "x-csrf-token"))
-  end
+  defp header_csrf_token(conn), do: List.first(get_req_header(conn, "x-csrf-token"))
+
+  defp body_csrf_token(%{body_params: %{"_csrf_token" => csrf_token}}), do: csrf_token
+  defp body_csrf_token(_), do: nil
 
   defp valid_csrf_token?(
          _conn,
@@ -287,10 +338,7 @@ defmodule Plug.CSRFProtection do
          <<user_token::@double_encoded_token_size-binary, mask::@encoded_token_size-binary>>,
          _allow_hosts
        ) do
-    case Base.decode64(user_token) do
-      {:ok, user_token} -> Plug.Crypto.masked_compare(csrf_token, user_token, mask)
-      :error -> false
-    end
+    valid_masked_token?(csrf_token, user_token, mask)
   end
 
   defp valid_csrf_token?(
@@ -321,6 +369,17 @@ defmodule Plug.CSRFProtection do
   end
 
   defp valid_csrf_token?(_conn, _csrf_token, _user_token, _allowed_host), do: false
+
+  # TODO: Remove the decode64 variant in future releases
+  # as the tokens here are meant to be short-lived anyway.
+  defp valid_masked_token?(csrf_token, user_token, mask) do
+    with :error <- Base.url_decode64(user_token),
+         :error <- Base.decode64(user_token) do
+      false
+    else
+      {:ok, user_token} -> Plug.Crypto.masked_compare(csrf_token, user_token, mask)
+    end
+  end
 
   defp allowed_host?("." <> _ = allowed, host), do: String.ends_with?(host, allowed)
   defp allowed_host?(allowed, host), do: allowed == host
@@ -368,7 +427,7 @@ defmodule Plug.CSRFProtection do
 
   defp mask(token) do
     mask = generate_token()
-    Base.encode64(Plug.Crypto.mask(token, mask)) <> mask
+    Base.url_encode64(Plug.Crypto.mask(token, mask)) <> mask
   end
 
   defp unmasked_csrf_token do
@@ -384,6 +443,6 @@ defmodule Plug.CSRFProtection do
   end
 
   defp generate_token do
-    Base.encode64(:crypto.strong_rand_bytes(@token_size))
+    Base.url_encode64(:crypto.strong_rand_bytes(@token_size))
   end
 end

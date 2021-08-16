@@ -24,6 +24,13 @@ defmodule Ecto.Query.Builder.Select do
 
   """
   @spec escape(Macro.t, Keyword.t, Macro.Env.t) :: {Macro.t, {list, %{}}}
+  def escape(atom, _vars, _env)
+      when is_atom(atom) and not is_boolean(atom) and atom != nil do
+    Builder.error! """
+    #{inspect(atom)} is not a valid query expression, :select expects a query expression or a list of fields
+    """
+  end
+
   def escape(other, vars, env) do
     if take?(other) do
       {{:{}, [], [:&, [], [0]]}, {[], %{0 => {:any, other}}}}
@@ -240,11 +247,32 @@ defmodule Ecto.Query.Builder.Select do
         {{:source, meta, ix}, {:source, _, ix}} ->
           {:&, meta, [ix]}
 
-        {{:struct, meta, name, old_fields}, {:map, _, [_ | _] = new_fields}} when old_params == [] ->
-          {:%, meta, [name, {:%{}, meta, Keyword.merge(old_fields, new_fields)}]}
+        {{:struct, meta, name, old_fields}, {:map, _, new_fields}} when old_params == [] ->
+          cond do
+            new_fields == [] ->
+              old_expr
+
+            Keyword.keyword?(old_fields) and Keyword.keyword?(new_fields) ->
+              {:%, meta, [name, {:%{}, meta, Keyword.merge(old_fields, new_fields)}]}
+
+            true ->
+              {:merge, [], [old_expr, new_expr]}
+          end
 
         {{:map, meta, old_fields}, {:map, _, new_fields}} when old_params == [] ->
-          map_compile_merge(meta, old_fields, old_expr, new_fields, new_expr)
+          cond do
+            old_fields == [] ->
+              new_expr
+
+            new_fields == [] ->
+              old_expr
+
+            Keyword.keyword?(old_fields) and Keyword.keyword?(new_fields) ->
+              {:%{}, meta, Keyword.merge(old_fields, new_fields)}
+
+            true ->
+              {:merge, [], [old_expr, new_expr]}
+          end
 
         {_, {:map, _, _}} ->
           {:merge, [], [old_expr, new_expr]}
@@ -252,11 +280,15 @@ defmodule Ecto.Query.Builder.Select do
         {_, _} ->
           message = """
           cannot select_merge #{merge_argument_to_error(new_expr, query)} into \
-          #{merge_argument_to_error(old_expr, query)}, those select expressions are incompatible. \
-          You can only select_merge:
+          #{merge_argument_to_error(old_expr, query)}, those select expressions \
+          are incompatible. You can only select_merge:
 
-            * a map into another map, struct or source
-            * a source (such as post) into the same source
+            * a source (such as post) with another source (of the same type)
+            * a source (such as post) with a map
+            * a struct with a map
+            * a map with a map
+
+          Incompatible merge found
           """
 
           raise Ecto.QueryError, query: query, message: message
@@ -295,15 +327,6 @@ defmodule Ecto.Query.Builder.Select do
   defp classify_merge(_, _take) do
     :error
   end
-
-  defp map_compile_merge(_meta, [], _old_expr, _new_fields, new_expr), do: new_expr
-  defp map_compile_merge(_meta, _old_fields, old_expr, [], _new_expr), do: old_expr
-
-  defp map_compile_merge(meta, [_ | _] = old_fields, _, [_ | _] = new_fields, _),
-    do: {:%{}, meta, Keyword.merge(old_fields, new_fields)}
-
-  defp map_compile_merge(meta, _, old_expr, _, new_expr),
-    do: {:merge, meta, [old_expr, new_expr]}
 
   defp merge_argument_to_error({:&, _, [0]}, %{from: %{source: {source, alias}}}) do
     "source #{inspect(source || alias)}"

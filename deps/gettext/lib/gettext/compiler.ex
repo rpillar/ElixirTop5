@@ -11,30 +11,23 @@ defmodule Gettext.Compiler do
   require Logger
 
   @default_priv "priv/gettext"
+  @default_domain "default"
   @po_wildcard "*/LC_MESSAGES/*.po"
 
   @doc false
   defmacro __before_compile__(env) do
-    compile_time_opts = Module.get_attribute(env.module, :gettext_opts)
-
-    # :otp_app is only supported in "use Gettext" (because we need it to get the Mix config).
-    {otp_app, compile_time_opts} = Keyword.pop(compile_time_opts, :otp_app)
-
-    if is_nil(otp_app) do
-      # We're using Keyword.fetch!/2 to raise below.
-      Keyword.fetch!(compile_time_opts, :otp_app)
-    end
-
-    # Options given to "use Gettext" have higher precedence than options set
-    # throught Mix.Config.
-    mix_config_opts = Application.get_env(otp_app, env.module, [])
-    opts = Keyword.merge(mix_config_opts, compile_time_opts)
-
+    opts = Module.get_attribute(env.module, :gettext_opts)
+    otp_app = Keyword.fetch!(opts, :otp_app)
     priv = Keyword.get(opts, :priv, @default_priv)
     translations_dir = Application.app_dir(otp_app, priv)
     external_file = String.replace(Path.join(".compile", priv), "/", "_")
-    known_locales = known_locales(translations_dir)
-    default_locale = opts[:default_locale] || quote(do: Application.fetch_env!(:gettext, :default_locale))
+    known_po_files = known_po_files(translations_dir, opts)
+    known_locales = Enum.map(known_po_files, & &1[:locale]) |> Enum.uniq()
+
+    default_locale =
+      opts[:default_locale] || quote(do: Application.fetch_env!(:gettext, :default_locale))
+
+    default_domain = opts[:default_domain] || @default_domain
 
     quote do
       @behaviour Gettext.Backend
@@ -45,6 +38,7 @@ defmodule Gettext.Compiler do
       def __gettext__(:otp_app), do: unquote(otp_app)
       def __gettext__(:known_locales), do: unquote(known_locales)
       def __gettext__(:default_locale), do: unquote(default_locale)
+      def __gettext__(:default_domain), do: unquote(default_domain)
 
       # The manifest lives in the root of the priv
       # directory that contains .po/.pot files.
@@ -56,33 +50,34 @@ defmodule Gettext.Compiler do
 
       unquote(macros())
 
-      # These are the two functions we generated inside the backend. Here we define the bodyless
-      # clauses.
-      def lgettext(locale, domain, msgid, bindings)
-      def lngettext(locale, domain, msgid, msgid_plural, n, bindings)
+      # These are the two functions we generated inside the backend.
+      def lgettext(locale, domain, msgctxt \\ nil, msgid, bindings)
+      def lngettext(locale, domain, msgctxt \\ nil, msgid, msgid_plural, n, bindings)
 
-      unquote(compile_po_files(env, translations_dir, opts))
+      unquote(compile_po_files(env, known_po_files, opts))
 
       # Catch-all clauses.
-      def lgettext(locale, domain, msgid, bindings),
+      def lgettext(locale, domain, msgctxt, msgid, bindings),
         do: handle_missing_translation(locale, domain, msgid, bindings)
 
-      def lngettext(locale, domain, msgid, msgid_plural, n, bindings),
+      def lngettext(locale, domain, msgctxt, msgid, msgid_plural, n, bindings),
         do: handle_missing_plural_translation(locale, domain, msgid, msgid_plural, n, bindings)
     end
   end
 
   defp macros() do
     quote unquote: false do
-      defmacro dgettext_noop(domain, msgid) do
+      defmacro dpgettext_noop(domain, msgctxt, msgid) do
         domain = Gettext.Compiler.expand_to_binary(domain, "domain", __MODULE__, __CALLER__)
         msgid = Gettext.Compiler.expand_to_binary(msgid, "msgid", __MODULE__, __CALLER__)
+        msgctxt = Gettext.Compiler.expand_to_binary(msgctxt, "msgctxt", __MODULE__, __CALLER__)
 
         if Gettext.Extractor.extracting?() do
           Gettext.Extractor.extract(
             __CALLER__,
             __MODULE__,
             domain,
+            msgctxt,
             msgid,
             Gettext.Compiler.get_and_flush_extracted_comments()
           )
@@ -91,15 +86,32 @@ defmodule Gettext.Compiler do
         msgid
       end
 
-      defmacro gettext_noop(msgid) do
+      defmacro dgettext_noop(domain, msgid) do
         quote do
-          unquote(__MODULE__).dgettext_noop("default", unquote(msgid))
+          unquote(__MODULE__).dpgettext_noop(unquote(domain), nil, unquote(msgid))
         end
       end
 
-      defmacro dngettext_noop(domain, msgid, msgid_plural) do
+      defmacro gettext_noop(msgid) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpgettext_noop(unquote(domain), nil, unquote(msgid))
+        end
+      end
+
+      defmacro pgettext_noop(msgid, context) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpgettext_noop(unquote(domain), unquote(context), unquote(msgid))
+        end
+      end
+
+      defmacro dpngettext_noop(domain, msgctxt, msgid, msgid_plural) do
         domain = Gettext.Compiler.expand_to_binary(domain, "domain", __MODULE__, __CALLER__)
         msgid = Gettext.Compiler.expand_to_binary(msgid, "msgid", __MODULE__, __CALLER__)
+        msgctxt = Gettext.Compiler.expand_to_binary(msgctxt, "msgctxt", __MODULE__, __CALLER__)
 
         msgid_plural =
           Gettext.Compiler.expand_to_binary(msgid_plural, "msgid_plural", __MODULE__, __CALLER__)
@@ -109,6 +121,7 @@ defmodule Gettext.Compiler do
             __CALLER__,
             __MODULE__,
             domain,
+            msgctxt,
             {msgid, msgid_plural},
             Gettext.Compiler.get_and_flush_extracted_comments()
           )
@@ -117,37 +130,99 @@ defmodule Gettext.Compiler do
         {msgid, msgid_plural}
       end
 
-      defmacro ngettext_noop(msgid, msgid_plural) do
+      defmacro dngettext_noop(domain, msgid, msgid_plural) do
         quote do
-          unquote(__MODULE__).dngettext_noop("default", unquote(msgid), unquote(msgid_plural))
+          unquote(__MODULE__).dpngettext_noop(
+            unquote(domain),
+            nil,
+            unquote(msgid),
+            unquote(msgid_plural)
+          )
+        end
+      end
+
+      defmacro pngettext_noop(msgctxt, msgid, msgid_plural) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpngettext_noop(
+            unquote(domain),
+            unquote(msgctxt),
+            unquote(msgid),
+            unquote(msgid_plural)
+          )
+        end
+      end
+
+      defmacro ngettext_noop(msgid, msgid_plural) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpngettext_noop(
+            unquote(domain),
+            nil,
+            unquote(msgid),
+            unquote(msgid_plural)
+          )
+        end
+      end
+
+      defmacro dpgettext(domain, msgctxt, msgid, bindings \\ Macro.escape(%{})) do
+        quote do
+          msgid =
+            unquote(__MODULE__).dpgettext_noop(unquote(domain), unquote(msgctxt), unquote(msgid))
+
+          Gettext.dpgettext(
+            unquote(__MODULE__),
+            unquote(domain),
+            unquote(msgctxt),
+            msgid,
+            unquote(bindings)
+          )
         end
       end
 
       defmacro dgettext(domain, msgid, bindings \\ Macro.escape(%{})) do
         quote do
-          msgid = unquote(__MODULE__).dgettext_noop(unquote(domain), unquote(msgid))
-          Gettext.dgettext(unquote(__MODULE__), unquote(domain), msgid, unquote(bindings))
+          unquote(__MODULE__).dpgettext(unquote(domain), nil, unquote(msgid), unquote(bindings))
+        end
+      end
+
+      defmacro pgettext(msgctxt, msgid, bindings \\ Macro.escape(%{})) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpgettext(
+            unquote(domain),
+            unquote(msgctxt),
+            unquote(msgid),
+            unquote(bindings)
+          )
         end
       end
 
       defmacro gettext(msgid, bindings \\ Macro.escape(%{})) do
+        domain = __gettext__(:default_domain)
+
         quote do
-          unquote(__MODULE__).dgettext("default", unquote(msgid), unquote(bindings))
+          unquote(__MODULE__).dpgettext(unquote(domain), nil, unquote(msgid), unquote(bindings))
         end
       end
 
-      defmacro dngettext(domain, msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
+      defmacro dpngettext(domain, msgctxt, msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
         quote do
           {msgid, msgid_plural} =
-            unquote(__MODULE__).dngettext_noop(
+            unquote(__MODULE__).dpngettext_noop(
               unquote(domain),
+              unquote(msgctxt),
               unquote(msgid),
               unquote(msgid_plural)
             )
 
-          Gettext.dngettext(
+          Gettext.dpngettext(
             unquote(__MODULE__),
             unquote(domain),
+            unquote(msgctxt),
             msgid,
             msgid_plural,
             unquote(n),
@@ -156,10 +231,41 @@ defmodule Gettext.Compiler do
         end
       end
 
-      defmacro ngettext(msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
+      defmacro dngettext(domain, msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
         quote do
-          unquote(__MODULE__).dngettext(
-            "default",
+          unquote(__MODULE__).dpngettext(
+            unquote(domain),
+            nil,
+            unquote(msgid),
+            unquote(msgid_plural),
+            unquote(n),
+            unquote(bindings)
+          )
+        end
+      end
+
+      defmacro ngettext(msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpngettext(
+            unquote(domain),
+            nil,
+            unquote(msgid),
+            unquote(msgid_plural),
+            unquote(n),
+            unquote(bindings)
+          )
+        end
+      end
+
+      defmacro pngettext(msgctxt, msgid, msgid_plural, n, bindings \\ Macro.escape(%{})) do
+        domain = __gettext__(:default_domain)
+
+        quote do
+          unquote(__MODULE__).dpngettext(
+            unquote(domain),
+            unquote(msgctxt),
             unquote(msgid),
             unquote(msgid_plural),
             unquote(n),
@@ -182,7 +288,7 @@ defmodule Gettext.Compiler do
   """
   @spec expand_to_binary(binary, binary, module, Macro.Env.t()) :: binary | no_return
   def expand_to_binary(term, what, gettext_module, env)
-      when what in ~w(domain msgid msgid_plural comment) do
+      when what in ~w(domain msgctxt msgid msgid_plural comment) do
     raiser = fn term ->
       raise ArgumentError, """
       Gettext macros expect translation keys (msgid and msgid_plural),
@@ -201,8 +307,10 @@ defmodule Gettext.Compiler do
       """
     end
 
+    # We support nil too in order to fall back to a nil context and always use the *p
+    # variants of the Gettext macros.
     case Macro.expand(term, env) do
-      term when is_binary(term) ->
+      term when is_binary(term) or is_nil(term) ->
         term
 
       {:<<>>, _, pieces} = term ->
@@ -245,7 +353,7 @@ defmodule Gettext.Compiler do
   @spec warn_if_domain_contains_slashes(binary) :: :ok
   def warn_if_domain_contains_slashes(domain) do
     if String.contains?(domain, "/") do
-      Logger.error(fn -> ["Slashes in domains are not supported: ", inspect(domain)] end)
+      _ = Logger.error(fn -> ["Slashes in domains are not supported: ", inspect(domain)] end)
     end
 
     :ok
@@ -253,21 +361,38 @@ defmodule Gettext.Compiler do
 
   # Compiles all the `.po` files in the given directory (`dir`) into `lgettext/4`
   # and `lngettext/6` function clauses.
-  defp compile_po_files(env, dir, opts) do
-    plural_mod = Keyword.get(opts, :plural_forms, Gettext.Plural)
-    po_files = po_files_in_dir(dir)
+  defp compile_po_files(env, known_po_files, opts) do
+    plural_mod =
+      Keyword.get(opts, :plural_forms) ||
+        Application.get_env(:gettext, :plural_forms, Gettext.Plural)
 
     if Keyword.get(opts, :one_module_per_locale, false) do
-      {quoted, locales} =
-        Enum.map_reduce(po_files, %{}, &compile_parallel_po_file(env, &1, &2, plural_mod))
+      known_po_files
+      |> Enum.group_by(&Map.get(&1, :locale))
+      |> Stream.map(fn {_locale, files} ->
+        {quoted, locale} =
+          Enum.map_reduce(
+            files,
+            %{},
+            &compile_parallel_po_file(env, &1, &2, plural_mod)
+          )
 
-      locales
-      |> Enum.map(&Kernel.ParallelCompiler.async(fn -> create_locale_module(env, &1) end))
-      |> Enum.each(&Task.await(&1, :infinity))
+        {quoted, locale}
+      end)
+      |> Enum.map(fn {quoted, locale} ->
+        task =
+          Kernel.ParallelCompiler.async(fn ->
+            create_locale_module(env, hd(Enum.to_list(locale)))
+          end)
 
-      quoted
+        {task, quoted}
+      end)
+      |> Enum.map(fn {task, quoted} ->
+        Task.await(task, :infinity)
+        quoted
+      end)
     else
-      Enum.map(po_files, &compile_serial_po_file(env, &1, plural_mod))
+      Enum.map(known_po_files, &compile_serial_po_file(env, &1, plural_mod))
     end
   end
 
@@ -277,37 +402,37 @@ defmodule Gettext.Compiler do
     :ok
   end
 
-  defp compile_serial_po_file(env, path, plural_mod) do
+  defp compile_serial_po_file(env, po_file, plural_mod) do
     {locale, domain, singular_fun, plural_fun, quoted} =
-      compile_po_file(:defp, path, env, plural_mod)
+      compile_po_file(:defp, po_file, env, plural_mod)
 
     quote do
       unquote(quoted)
 
-      def lgettext(unquote(locale), unquote(domain), msgid, bindings) do
-        unquote(singular_fun)(msgid, bindings)
+      def lgettext(unquote(locale), unquote(domain), msgctxt, msgid, bindings) do
+        unquote(singular_fun)(msgctxt, msgid, bindings)
       end
 
-      def lngettext(unquote(locale), unquote(domain), msgid, msgid_plural, n, bindings) do
-        unquote(plural_fun)(msgid, msgid_plural, n, bindings)
+      def lngettext(unquote(locale), unquote(domain), msgctxt, msgid, msgid_plural, n, bindings) do
+        unquote(plural_fun)(msgctxt, msgid, msgid_plural, n, bindings)
       end
     end
   end
 
-  defp compile_parallel_po_file(env, path, locales, plural_mod) do
+  defp compile_parallel_po_file(env, po_file, locales, plural_mod) do
     {locale, domain, singular_fun, plural_fun, locale_module_quoted} =
-      compile_po_file(:def, path, env, plural_mod)
+      compile_po_file(:def, po_file, env, plural_mod)
 
     module = :"#{env.module}.T_#{locale}"
 
     current_module_quoted =
       quote do
-        def lgettext(unquote(locale), unquote(domain), msgid, bindings) do
-          unquote(module).unquote(singular_fun)(msgid, bindings)
+        def lgettext(unquote(locale), unquote(domain), msgctxt, msgid, bindings) do
+          unquote(module).unquote(singular_fun)(msgctxt, msgid, bindings)
         end
 
-        def lngettext(unquote(locale), unquote(domain), msgid, msgid_plural, n, bindings) do
-          unquote(module).unquote(plural_fun)(msgid, msgid_plural, n, bindings)
+        def lngettext(unquote(locale), unquote(domain), msgctxt, msgid, msgid_plural, n, bindings) do
+          unquote(module).unquote(plural_fun)(msgctxt, msgid, msgid_plural, n, bindings)
         end
       end
 
@@ -315,10 +440,10 @@ defmodule Gettext.Compiler do
     {current_module_quoted, locales}
   end
 
-  # Compiles a .po file into a list of lgettext/4 (for translations) and
-  # lngettext/6 (for plural translations) clauses.
-  defp compile_po_file(kind, path, env, plural_mod) do
-    {locale, domain} = locale_and_domain_from_path(path)
+  # Compiles a .po file into a list of lgettext/5 (for translations) and
+  # lngettext/7 (for plural translations) clauses.
+  defp compile_po_file(kind, po_file, env, plural_mod) do
+    %{locale: locale, domain: domain, path: path} = po_file
     %PO{translations: translations, file: file} = PO.parse_file!(path)
 
     singular_fun = :"#{locale}_#{domain}_lgettext"
@@ -330,7 +455,7 @@ defmodule Gettext.Compiler do
       quote do
         unquote(translations)
 
-        Kernel.unquote(kind)(unquote(singular_fun)(msgid, bindings)) do
+        Kernel.unquote(kind)(unquote(singular_fun)(msgctxt, msgid, bindings)) do
           unquote(env.module).handle_missing_translation(
             unquote(locale),
             unquote(domain),
@@ -339,7 +464,7 @@ defmodule Gettext.Compiler do
           )
         end
 
-        Kernel.unquote(kind)(unquote(plural_fun)(msgid, msgid_plural, n, bindings)) do
+        Kernel.unquote(kind)(unquote(plural_fun)(msgctxt, msgid, msgid_plural, n, bindings)) do
           unquote(env.module).handle_missing_plural_translation(
             unquote(locale),
             unquote(domain),
@@ -371,17 +496,34 @@ defmodule Gettext.Compiler do
        ) do
     msgid = IO.iodata_to_binary(t.msgid)
     msgstr = IO.iodata_to_binary(t.msgstr)
+    msgctxt = t.msgctxt && IO.iodata_to_binary(t.msgctxt)
+    keys = Interpolation.keys(msgstr)
 
-    # Only actually generate this function clause if the msgstr is not empty. If
-    # it's empty, not generating this clause (by returning `nil` from this `if`)
-    # means that the dynamic clause will be executed, returning `{:default,
-    # msgid}` (with interpolation and so on).
-    if msgstr != "" do
-      quote do
-        Kernel.unquote(kind)(unquote(singular_fun)(unquote(msgid), var!(bindings))) do
-          unquote(compile_interpolation(msgstr))
+    case msgstr do
+      # Only actually generate this function clause if the msgstr is not empty.
+      # If it is empty, it will trigger the missing translation case.
+      "" ->
+        nil
+
+      # If the msgid is the same as msgstr, simply return it without allocating
+      # a new string.
+      ^msgid when keys == [] ->
+        quote do
+          Kernel.unquote(kind)(
+            unquote(singular_fun)(unquote(msgctxt), unquote(msgid) = msgid, _)
+          ) do
+            {:ok, msgid}
+          end
         end
-      end
+
+      _ ->
+        quote do
+          Kernel.unquote(kind)(
+            unquote(singular_fun)(unquote(msgctxt), unquote(msgid), var!(bindings))
+          ) do
+            unquote(compile_interpolation(msgstr, :translation))
+          end
+        end
     end
   end
 
@@ -399,30 +541,38 @@ defmodule Gettext.Compiler do
     msgid = IO.iodata_to_binary(t.msgid)
     msgid_plural = IO.iodata_to_binary(t.msgid_plural)
     msgstr = Enum.map(t.msgstr, fn {form, str} -> {form, IO.iodata_to_binary(str)} end)
+    msgctxt = t.msgctxt && IO.iodata_to_binary(t.msgctxt)
 
     # If any of the msgstrs is empty, then we skip the generation of this
     # function clause. The reason we do this is the same as for the
     # `%Translation{}` clause.
     unless Enum.any?(msgstr, &match?({_form, ""}, &1)) do
-      # We use flat_map here because clauses can only be defined in blocks, so
-      # when quoted they are a list.
+      # We use flat_map here because clauses can only be defined in blocks,
+      # so when quoted they are a list.
       clauses =
         Enum.flat_map(msgstr, fn {form, str} ->
-          quote do: (unquote(form) -> unquote(compile_interpolation(str)))
+          quote do: (unquote(form) -> unquote(compile_interpolation(str, :plural_translation)))
         end)
 
       error_clause =
         quote do
           form ->
-            raise Gettext.Error,
-                  "plural form #{form} is required for locale #{inspect(unquote(locale))} " <>
-                    "but is missing for translation compiled from " <>
-                    "#{unquote(file)}:#{unquote(t.po_source_line)}"
+            raise Gettext.PluralFormError,
+              form: form,
+              locale: unquote(locale),
+              file: unquote(file),
+              line: unquote(t.po_source_line)
         end
 
       quote do
         Kernel.unquote(kind)(
-          unquote(plural_fun)(unquote(msgid), unquote(msgid_plural), n, bindings)
+          unquote(plural_fun)(
+            unquote(msgctxt),
+            unquote(msgid),
+            unquote(msgid_plural),
+            n,
+            bindings
+          )
         ) do
           plural_form = unquote(plural_mod).plural(unquote(locale), n)
           var!(bindings) = Map.put(bindings, :count, n)
@@ -436,12 +586,13 @@ defmodule Gettext.Compiler do
   defp warn_if_missing_plural_forms(locale, plural_mod, translation, file) do
     Enum.each(0..(plural_mod.nplurals(locale) - 1), fn form ->
       unless Map.has_key?(translation.msgstr, form) do
-        Logger.error([
-          "#{file}:#{translation.po_source_line}: translation is missing plural form ",
-          Integer.to_string(form),
-          " which is required by the locale ",
-          inspect(locale)
-        ])
+        _ =
+          Logger.error([
+            "#{file}:#{translation.po_source_line}: translation is missing plural form ",
+            Integer.to_string(form),
+            " which is required by the locale ",
+            inspect(locale)
+          ])
       end
     end)
   end
@@ -454,30 +605,38 @@ defmodule Gettext.Compiler do
   # string based on some bindings or returns an error in case those bindings are
   # missing. Note that the `bindings` variable is assumed to be in the scope by
   # the quoted code that is returned.
-  defp compile_interpolation(str) do
-    compile_interpolation(str, Interpolation.keys(str))
+  defp compile_interpolation(str, translation_type) do
+    compile_interpolation(str, translation_type, Interpolation.keys(str))
   end
 
-  defp compile_interpolation(str, [] = _keys) do
+  defp compile_interpolation(str, _translation_type, [] = _keys) do
     quote do
       _ = var!(bindings)
       {:ok, unquote(str)}
     end
   end
 
-  defp compile_interpolation(str, keys) do
+  defp compile_interpolation(str, translation_type, keys) do
     match = compile_interpolation_match(keys)
-    interpolation = compile_interpolatable_string(str)
     interpolatable = Interpolation.to_interpolatable(str)
+    interpolation = compile_interpolatable_string(interpolatable)
+
+    all_bindings_clause = quote do: (unquote(match) -> {:ok, unquote(interpolation)})
+
+    dynamic_interpolation_clause =
+      quote do
+        %{} -> Gettext.Interpolation.interpolate(unquote(interpolatable), var!(bindings))
+      end
+
+    clauses =
+      if keys == [:count] and translation_type == :plural_translation do
+        all_bindings_clause
+      else
+        all_bindings_clause ++ dynamic_interpolation_clause
+      end
 
     quote do
-      case var!(bindings) do
-        unquote(match) ->
-          {:ok, unquote(interpolation)}
-
-        %{} ->
-          Gettext.Interpolation.interpolate(unquote(interpolatable), var!(bindings))
-      end
+      case var!(bindings), do: unquote(clauses)
     end
   end
 
@@ -488,18 +647,19 @@ defmodule Gettext.Compiler do
     {:%{}, [], Enum.map(keys, &{&1, Macro.var(&1, __MODULE__)})}
   end
 
-  # Compiles a string into a sequence of applications of the `<>` operator.
-  # `%{var}` patterns are turned into `var` variables, namespaced inside the
-  # current `__MODULE__`. Heavily inspired by Chris McCord's "linguist", see
-  # https://github.com/chrismccord/linguist/blob/master/lib/linguist/compiler.ex#L70
-  defp compile_interpolatable_string(str) do
-    Enum.reduce(Interpolation.to_interpolatable(str), "", fn
-      key, acc when is_atom(key) ->
-        quote do: unquote(acc) <> to_string(unquote(Macro.var(key, __MODULE__)))
+  # Compiles a string into a binary with `%{var}` patterns turned into `var`
+  # variables, namespaced inside the current `__MODULE__`.
+  defp compile_interpolatable_string(interpolatable) do
+    parts =
+      Enum.map(interpolatable, fn
+        key when is_atom(key) ->
+          quote do: to_string(unquote(Macro.var(key, __MODULE__))) :: binary
 
-      str, acc ->
-        quote do: unquote(acc) <> unquote(str)
-    end)
+        str ->
+          str
+      end)
+
+    {:<<>>, [], parts}
   end
 
   # Returns all the PO files in `translations_dir` (under "canonical" paths,
@@ -510,12 +670,19 @@ defmodule Gettext.Compiler do
     |> Path.wildcard()
   end
 
-  # Returns all the locales in `translations_dir` (which are the locales known
-  # by the compiled backend).
-  defp known_locales(translations_dir) do
+  # Returns the known the PO files in `translations_dir` with their locale and domain
+  # If allowed_locales is configured, it removes all the PO files that do not belong
+  # to those locales
+  defp known_po_files(translations_dir, opts) do
     case File.ls(translations_dir) do
-      {:ok, files} ->
-        Enum.filter(files, &File.dir?(Path.join(translations_dir, &1)))
+      {:ok, _} ->
+        translations_dir
+        |> po_files_in_dir()
+        |> Enum.map(fn path ->
+          {locale, domain} = locale_and_domain_from_path(path)
+          %{locale: locale, path: path, domain: domain}
+        end)
+        |> maybe_restrict_locales(opts[:allowed_locales])
 
       {:error, :enoent} ->
         []
@@ -523,5 +690,14 @@ defmodule Gettext.Compiler do
       {:error, reason} ->
         raise File.Error, reason: reason, action: "list directory", path: translations_dir
     end
+  end
+
+  defp maybe_restrict_locales(po_files, nil) do
+    po_files
+  end
+
+  defp maybe_restrict_locales(po_files, allowed_locales) when is_list(allowed_locales) do
+    allowed_locales = MapSet.new(allowed_locales)
+    Enum.filter(po_files, &MapSet.member?(allowed_locales, &1[:locale]))
   end
 end

@@ -1,6 +1,7 @@
 defmodule Phoenix.Ecto.SQL.Sandbox do
   @moduledoc """
-  A plug to allow concurrent, transactional acceptance tests with Ecto.Adapters.SQL.Sandbox.
+  A plug to allow concurrent, transactional acceptance tests with [`Ecto.Adapters.SQL.Sandbox`]
+  (https://hexdocs.pm/ecto_sql/Ecto.Adapters.SQL.Sandbox.html).
 
   ## Example
 
@@ -28,7 +29,83 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
         :ok = Ecto.Adapters.SQL.Sandbox.checkout(YourApp.Repo)
         metadata = Phoenix.Ecto.SQL.Sandbox.metadata_for(YourApp.Repo, self())
         Hound.start_session(metadata: metadata)
+        :ok
       end
+
+  ### Supporting socket connections
+
+  To support socket connections the spawned processes need access to the header
+  used for transporting the metadata. By default this is the user agent header,
+  but you can also use custom `X-`-headers.
+
+      socket "/path", Socket,
+        websocket: [connect_info: [:user_agent, …]]
+
+      socket "/path", Socket,
+        websocket: [connect_info: [:x_headers, …]]
+
+  To fetch the value you either use `connect_info[:user_agent]` or for a custom header:
+
+      Enum.find_value(connect_info.x_headers, fn
+        {"x-my-custom-header", val} -> val
+        _ -> false
+      end)
+
+  #### Channels
+
+  For channels `:connect_info` data is available to any of your Sockets'
+  `c:Phoenix.Socket.connect/3` callbacks:
+
+      # user_socket.ex
+      def connect(_params, socket, connect_info) do
+        {:ok, assign(socket, :phoenix_ecto_sandbox, connect_info[:user_agent])}
+      end
+
+  This stores the value on the socket, so it can be available to all of your
+  channels for allowing the sandbox.
+
+      # room_channel.ex
+      def join("room:lobby", _payload, socket) do
+        allow_ecto_sandbox(socket)
+        {:ok, socket}
+      end
+
+      # This is a great function to extract to a helper module
+      defp allow_ecto_sandbox(socket) do
+        Phoenix.Ecto.SQL.Sandbox.allow(
+          socket.assigns.phoenix_ecto_sandbox,
+          Ecto.Adapters.SQL.Sandbox
+        )
+      end
+
+  `allow/2` needs to be manually called once for each channel, at best directly
+  at the start of `c:Phoenix.Channel.join/3`.
+
+  #### Live View
+
+  LiveViews can be supported in a similar fashion than channels, but using the
+  `c:Phoenix.LiveView.mount/3` callback.
+
+      def mount(_, _, socket) do
+        allow_ecto_sandbox(socket)
+        …
+      end
+
+      # This is a great function to extract to a helper module
+      defp allow_ecto_sandbox(socket) do
+        %{assigns: %{phoenix_ecto_sandbox: metadata}} =
+          assign_new(socket, :phoenix_ecto_sandbox, fn ->
+            if connected?(socket), do: get_connect_info(socket)[:user_agent]
+          end)
+
+        Phoenix.Ecto.SQL.Sandbox.allow(metadata, Ecto.Adapters.SQL.Sandbox)
+      end
+
+  This is a bit more complex than the channel code, because LiveViews not only
+  are their own processes when spawned via a socket connection, but also when
+  doing the static render as part of the plug pipeline. Given `get_connect_info/1`
+  is only available for socket connections, this uses the `:phoenix_ecto_sandbox`
+  assign of the rendering `conn` for the static render.
 
   ## Concurrent end-to-end tests with external clients
 
@@ -54,17 +131,19 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
 
   import Plug.Conn
   alias Plug.Conn
-  alias Phoenix.Ecto.SQL.SandboxSupervisor
+  alias Phoenix.Ecto.SQL.{SandboxSession, SandboxSupervisor}
 
   @doc """
   Spawns a sandbox session to checkout a connection for a remote client.
 
   ## Examples
 
-      iex> {:ok, _owner_pid, metdata} = start_child(MyApp.Repo)
+      iex> {:ok, _owner_pid, metadata} = start_child(MyApp.Repo)
   """
   def start_child(repo, opts \\ []) do
-    case Supervisor.start_child(SandboxSupervisor, [repo, self(), opts]) do
+    child_spec = {SandboxSession, {repo, self(), opts}}
+
+    case DynamicSupervisor.start_child(SandboxSupervisor, child_spec) do
       {:ok, owner} ->
         metadata = metadata_for(repo, owner)
         {:ok, owner, metadata}
@@ -110,8 +189,9 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
     |> send_resp(200, encode_metadata(metadata))
     |> halt()
   end
+
   def call(%Conn{method: "DELETE", path_info: path} = conn, %{path: path} = opts) do
-    case extract_metadata(conn, opts.header) do
+    case decode_metadata(extract_header(conn, opts.header)) do
       %{owner: owner} ->
         :ok = stop(owner)
 
@@ -128,19 +208,13 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
   end
 
   def call(conn, %{header: header, sandbox: sandbox}) do
-    _result =
-      conn
-      |> extract_metadata(header)
-      |> allow_sandbox_access(sandbox)
-
-    conn
+    header = extract_header(conn, header)
+    allow(header, sandbox)
+    assign(conn, :phoenix_ecto_sandbox, header)
   end
 
-  defp extract_metadata(%Conn{} = conn, header) do
-    conn
-    |> get_req_header(header)
-    |> List.first()
-    |> decode_metadata()
+  defp extract_header(%Conn{} = conn, header) do
+    conn |> get_req_header(header) |> List.first()
   end
 
   @doc """
@@ -148,7 +222,7 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
   to allow the endpoint to access the database connection checked
   out by the test process.
   """
-  @spec metadata_for(Ecto.Repo.t | [Ecto.Repo.t], pid) :: map
+  @spec metadata_for(Ecto.Repo.t() | [Ecto.Repo.t()], pid) :: map
   def metadata_for(repo_or_repos, pid) when is_pid(pid) do
     %{repo: repo_or_repos, owner: pid}
   end
@@ -170,25 +244,34 @@ defmodule Phoenix.Ecto.SQL.Sandbox do
   """
   def decode_metadata(encoded_meta) when is_binary(encoded_meta) do
     last_part = encoded_meta |> String.split("/") |> List.last()
+
     case Regex.run(~r/BeamMetadata \((.*?)\)/, last_part) do
       [_, metadata] -> parse_metadata(metadata)
-      _             -> %{}
+      _ -> %{}
     end
   end
+
   def decode_metadata(_), do: %{}
 
-  defp allow_sandbox_access(%{repo: repo, owner: owner}, sandbox) do
+  def allow(encoded_metadata, sandbox) when is_binary(encoded_metadata) do
+    metadata = decode_metadata(encoded_metadata)
+    allow(metadata, sandbox)
+  end
+
+  def allow(%{repo: repo, owner: owner}, sandbox) do
     Enum.each(List.wrap(repo), &sandbox.allow(&1, owner, self()))
   end
-  defp allow_sandbox_access(_metadata, _sandbox), do: nil
+
+  def allow(%{}, _sandbox), do: :ok
+  def allow(nil, _sandbox), do: :ok
 
   defp parse_metadata(encoded_metadata) do
     encoded_metadata
     |> Base.url_decode64!()
     |> :erlang.binary_to_term()
     |> case do
-         {:v1, metadata} -> metadata
-         _               -> %{}
-       end
+      {:v1, metadata} -> metadata
+      _ -> %{}
+    end
   end
 end

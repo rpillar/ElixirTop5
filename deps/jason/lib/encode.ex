@@ -97,7 +97,10 @@ defmodule Jason.Encode do
   end
 
   def value(value, escape, encode_map) when is_map(value) do
-    encode_map.(value, escape, encode_map)
+    case Map.to_list(value) do
+      [] -> "{}"
+      keyword -> encode_map.(keyword, escape, encode_map)
+    end
   end
 
   def value(value, escape, encode_map) do
@@ -150,19 +153,24 @@ defmodule Jason.Encode do
      | list_loop(tail, escape, encode_map)]
   end
 
-  @spec map(map, opts) :: iodata
-  def map(value, {escape, encode_map}) do
-    encode_map.(value, escape, encode_map)
+  @spec keyword(keyword, opts) :: iodata
+  def keyword(list, _) when list == [], do: "{}"
+  def keyword(list, {escape, encode_map}) when is_list(list) do
+    encode_map.(list, escape, encode_map)
   end
 
-  defp map_naive(value, escape, encode_map) do
+  @spec map(map, opts) :: iodata
+  def map(value, {escape, encode_map}) do
     case Map.to_list(value) do
       [] -> "{}"
-      [{key, value} | tail] ->
-        ["{\"", key(key, escape), "\":",
-         value(value, escape, encode_map)
-         | map_naive_loop(tail, escape, encode_map)]
+      keyword -> encode_map.(keyword, escape, encode_map)
     end
+  end
+
+  defp map_naive([{key, value} | tail], escape, encode_map) do
+    ["{\"", key(key, escape), "\":",
+    value(value, escape, encode_map)
+    | map_naive_loop(tail, escape, encode_map)]
   end
 
   defp map_naive_loop([], _escape, _encode_map) do
@@ -175,16 +183,12 @@ defmodule Jason.Encode do
      | map_naive_loop(tail, escape, encode_map)]
   end
 
-  defp map_strict(value, escape, encode_map) do
-    case Map.to_list(value) do
-      [] -> "{}"
-      [{key, value} | tail] ->
-        key = IO.iodata_to_binary(key(key, escape))
-        visited = %{key => []}
-        ["{\"", key, "\":",
-         value(value, escape, encode_map)
-         | map_strict_loop(tail, escape, encode_map, visited)]
-    end
+  defp map_strict([{key, value} | tail], escape, encode_map) do
+    key = IO.iodata_to_binary(key(key, escape))
+    visited = %{key => []}
+    ["{\"", key, "\":",
+     value(value, escape, encode_map)
+     | map_strict_loop(tail, escape, encode_map, visited)]
   end
 
   defp map_strict_loop([], _encode_map, _escape, _visited) do
@@ -257,7 +261,7 @@ defmodule Jason.Encode do
   slash_escapes = Enum.zip('\b\t\n\f\r\"\\', 'btnfr"\\')
   surogate_escapes = Enum.zip([0x2028, 0x2029], ["\\u2028", "\\u2029"])
   ranges = [{0x00..0x1F, :unicode} | slash_escapes]
-  html_ranges = [{0x00..0x1F, :unicode}, {?/, ?/} | slash_escapes]
+  html_ranges = [{0x00..0x1F, :unicode}, {?<, :unicode}, {?/, ?/} | slash_escapes]
   escape_jt = Codegen.jump_table(html_ranges, :error)
 
   Enum.each(escape_jt, fn

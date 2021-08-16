@@ -33,13 +33,24 @@ defmodule Credo.Sources do
     |> List.wrap()
   end
 
-  def find(%Credo.Execution{files: files}) do
+  def find(%Credo.Execution{files: files, parse_timeout: parse_timeout}) do
+    parse_timeout =
+      if is_nil(parse_timeout) do
+        :infinity
+      else
+        parse_timeout
+      end
+
     MapSet.new()
     |> include(files.included)
     |> exclude(files.excluded)
     |> Enum.sort()
     |> Enum.take(max_file_count())
-    |> read_files()
+    |> read_files(parse_timeout)
+  end
+
+  def find(nil) do
+    []
   end
 
   def find(paths) when is_list(paths) do
@@ -48,6 +59,40 @@ defmodule Credo.Sources do
 
   def find(path) when is_binary(path) do
     recurse_path(path)
+  end
+
+  @doc """
+  Finds sources in a given `directory` using a list of `included` and `excluded`
+  patterns. For `included`, patterns can be file paths, directory paths and globs.
+  For `excluded`, patterns can also be specified as regular expressions.
+
+      iex> Sources.find_in_dir("/home/rrrene/elixir", ["*.ex"], ["not_me.ex"])
+
+      iex> Sources.find_in_dir("/home/rrrene/elixir", ["*.ex"], [~r/messy/])
+  """
+  def find_in_dir(working_dir, included, excluded)
+
+  def find_in_dir(working_dir, [], excluded),
+    do: find_in_dir(working_dir, [Path.join(@default_sources_glob)], excluded)
+
+  def find_in_dir(working_dir, included, excluded) do
+    included_patterns = convert_globs_to_local_paths(working_dir, included)
+    excluded_patterns = convert_globs_to_local_paths(working_dir, excluded)
+
+    MapSet.new()
+    |> include(included_patterns)
+    |> exclude(excluded_patterns)
+    |> Enum.sort()
+    |> Enum.take(max_file_count())
+  end
+
+  defp convert_globs_to_local_paths(working_dir, patterns) do
+    patterns
+    |> List.wrap()
+    |> Enum.map(fn
+      pattern when is_binary(pattern) -> Path.expand(pattern, working_dir)
+      pattern -> pattern
+    end)
   end
 
   defp max_file_count do
@@ -118,7 +163,7 @@ defmodule Credo.Sources do
     Enum.map(paths, &Path.expand/1)
   end
 
-  defp read_files(filenames) do
+  defp read_files(filenames, parse_timeout) do
     tasks = Enum.map(filenames, &Task.async(fn -> to_source_file(&1) end))
 
     task_dictionary =
@@ -126,7 +171,7 @@ defmodule Credo.Sources do
       |> Enum.zip(filenames)
       |> Enum.into(%{})
 
-    tasks_with_results = Task.yield_many(tasks)
+    tasks_with_results = Task.yield_many(tasks, parse_timeout)
 
     results =
       Enum.map(tasks_with_results, fn {task, res} ->

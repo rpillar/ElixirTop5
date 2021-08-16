@@ -6,6 +6,7 @@ defmodule Mix.Phoenix.Schema do
   defstruct module: nil,
             repo: nil,
             table: nil,
+            collection: nil,
             embedded?: false,
             generate?: true,
             opts: [],
@@ -73,7 +74,7 @@ defmodule Mix.Phoenix.Schema do
     uniques   = uniques(cli_attrs)
     {assocs, attrs} = partition_attrs_and_assocs(module, attrs(cli_attrs))
     types = types(attrs)
-    web_namespace = opts[:web]
+    web_namespace = opts[:web] && Phoenix.Naming.camelize(opts[:web])
     web_path = web_namespace && Phoenix.Naming.underscore(web_namespace)
     embedded? = Keyword.get(opts, :embedded, false)
     generate? = Keyword.get(opts, :schema, true)
@@ -83,6 +84,8 @@ defmodule Mix.Phoenix.Schema do
       |> Module.split()
       |> List.last()
       |> Phoenix.Naming.underscore()
+
+    collection = if schema_plural == singular, do: singular <> "_collection", else: schema_plural
     string_attr = string_attr(types)
     create_params = params(attrs, :create)
     default_params_key =
@@ -103,6 +106,7 @@ defmodule Mix.Phoenix.Schema do
       attrs: attrs,
       plural: schema_plural,
       singular: singular,
+      collection: collection,
       assocs: assocs,
       types: types,
       defaults: schema_defaults(attrs),

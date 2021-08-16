@@ -19,13 +19,14 @@ defmodule Phoenix.Transports.WebSocket do
     |> Transport.transport_log(opts[:transport_log])
     |> Transport.force_ssl(handler, endpoint, opts)
     |> Transport.check_origin(handler, endpoint, opts)
+    |> Transport.check_subprotocols(opts[:subprotocols])
     |> case do
       %{halted: true} = conn ->
         {:error, conn}
 
       %{params: params} = conn ->
         keys = Keyword.get(opts, :connect_info, [])
-        connect_info = Transport.connect_info(conn, keys)
+        connect_info = Transport.connect_info(conn, endpoint, keys)
         config = %{endpoint: endpoint, transport: :websocket, options: opts, params: params, connect_info: connect_info}
 
         case handler.connect(config) do

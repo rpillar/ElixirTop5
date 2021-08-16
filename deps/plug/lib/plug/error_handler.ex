@@ -14,14 +14,16 @@ defmodule Plug.ErrorHandler do
           send_resp(conn, 200, "world")
         end
 
+        @impl Plug.ErrorHandler
         def handle_errors(conn, %{kind: _kind, reason: _reason, stack: _stack}) do
           send_resp(conn, conn.status, "Something went wrong")
         end
       end
 
   Once this module is used, a callback named `handle_errors/2` should
-  be defined in your plug. This callback should accept a connection and a map
-  containing:
+  be defined in your plug. This callback will receive the connection
+  already updated with a proper status code for the given exception.
+  The second argument is a map containing:
 
     * the exception kind (`:throw`, `:error` or `:exit`),
     * the reason (an exception for errors or a term for others)
@@ -40,12 +42,26 @@ defmodule Plug.ErrorHandler do
   **Note:** If this module is used with `Plug.Debugger`, it must be used
   after `Plug.Debugger`.
   """
+
+  @doc """
+  Handle errors from plugs.
+
+  Called when an exception is raised during the processing of a plug.
+  """
+  @callback handle_errors(Plug.Conn.t(), %{
+              kind: :error | :throw | :exit,
+              reason: Exception.t() | term(),
+              stack: Exception.stacktrace()
+            }) :: no_return()
+
   @doc false
   defmacro __using__(_) do
     quote location: :keep do
       @before_compile Plug.ErrorHandler
 
-      @doc false
+      @behaviour Plug.ErrorHandler
+
+      @impl Plug.ErrorHandler
       def handle_errors(conn, assigns) do
         Plug.Conn.send_resp(conn, conn.status, "Something went wrong")
       end
@@ -68,8 +84,14 @@ defmodule Plug.ErrorHandler do
             Plug.ErrorHandler.__catch__(conn, kind, e, reason, stack, &handle_errors/2)
         catch
           kind, reason ->
-            stack = System.stacktrace()
-            Plug.ErrorHandler.__catch__(conn, kind, reason, reason, stack, &handle_errors/2)
+            Plug.ErrorHandler.__catch__(
+              conn,
+              kind,
+              reason,
+              reason,
+              __STACKTRACE__,
+              &handle_errors/2
+            )
         end
       end
     end

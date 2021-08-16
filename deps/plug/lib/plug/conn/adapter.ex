@@ -1,6 +1,6 @@
 defmodule Plug.Conn.Adapter do
   @moduledoc """
-  Specification of the connection adapter API implemented by webservers
+  Specification of the connection adapter API implemented by webservers.
   """
   alias Plug.Conn
 
@@ -11,6 +11,32 @@ defmodule Plug.Conn.Adapter do
           port: :inet.port_number(),
           ssl_cert: binary | nil
         }
+
+  @doc """
+  Function used by adapters to create a new connection.
+  """
+  def conn(adapter, method, uri, remote_ip, req_headers) do
+    %URI{path: path, host: host, port: port, query: qs, scheme: scheme} = uri
+
+    %Plug.Conn{
+      adapter: adapter,
+      host: host,
+      method: method,
+      owner: self(),
+      path_info: split_path(path),
+      port: port,
+      remote_ip: remote_ip,
+      query_string: qs || "",
+      req_headers: req_headers,
+      request_path: path,
+      scheme: String.to_atom(scheme)
+    }
+  end
+
+  defp split_path(path) do
+    segments = :binary.split(path, "/", [:global])
+    for segment <- segments, segment != "", do: segment
+  end
 
   @doc """
   Sends the given status, headers and body as a response
@@ -24,7 +50,12 @@ defmodule Plug.Conn.Adapter do
   test implementation returns the actual body so it can
   be used during testing.
   """
-  @callback send_resp(payload, Conn.status(), Conn.headers(), Conn.body()) ::
+  @callback send_resp(
+              payload,
+              status :: Conn.status(),
+              headers :: Conn.headers(),
+              body :: Conn.body()
+            ) ::
               {:ok, sent_body :: binary | nil, payload}
 
   @doc """
@@ -41,8 +72,8 @@ defmodule Plug.Conn.Adapter do
   """
   @callback send_file(
               payload,
-              Conn.status(),
-              Conn.headers(),
+              status :: Conn.status(),
+              headers :: Conn.headers(),
               file :: binary,
               offset :: integer,
               length :: integer | :all
@@ -57,7 +88,7 @@ defmodule Plug.Conn.Adapter do
   test implementation returns the actual body so it can
   be used during testing.
   """
-  @callback send_chunked(payload, Conn.status(), Conn.headers()) ::
+  @callback send_chunked(payload, status :: Conn.status(), headers :: Conn.headers()) ::
               {:ok, sent_body :: binary | nil, payload}
 
   @doc """
@@ -71,7 +102,7 @@ defmodule Plug.Conn.Adapter do
   implementation returns the actual body and payload so
   it can be used during testing.
   """
-  @callback chunk(payload, Conn.status()) ::
+  @callback chunk(payload, body :: Conn.body()) ::
               :ok | {:ok, sent_body :: binary, payload} | {:error, term}
 
   @doc """
@@ -99,7 +130,8 @@ defmodule Plug.Conn.Adapter do
   If the adapter does not support inform, then `{:error, :not_supported}`
   should be returned.
   """
-  @callback inform(payload, Conn.status(), headers :: Keyword.t()) :: :ok | {:error, term}
+  @callback inform(payload, status :: Conn.status(), headers :: Keyword.t()) ::
+              :ok | {:error, term}
 
   @doc """
   Returns peer information such as the address, port and ssl cert.

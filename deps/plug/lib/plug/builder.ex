@@ -115,7 +115,7 @@ defmodule Plug.Builder do
         plug_builder_call(conn, opts)
       end
 
-      defoverridable init: 1, call: 2
+      defoverridable Plug
 
       import Plug.Conn
       import Plug.Builder, only: [plug: 1, plug: 2, builder_opts: 0]
@@ -139,7 +139,19 @@ defmodule Plug.Builder do
     builder_opts = Module.get_attribute(env.module, :plug_builder_opts)
     {conn, body} = Plug.Builder.compile(env, plugs, builder_opts)
 
+    compile_time =
+      if builder_opts[:init_mode] == :runtime do
+        []
+      else
+        for triplet <- plugs,
+            {plug, _, _} = triplet,
+            match?(~c"Elixir." ++ _, Atom.to_charlist(plug)) do
+          quote(do: unquote(plug).__info__(:module))
+        end
+      end
+
     quote do
+      unquote_splicing(compile_time)
       defp plug_builder_call(unquote(conn), opts), do: unquote(body)
     end
   end
@@ -169,7 +181,7 @@ defmodule Plug.Builder do
   plug.
 
   This macro doesn't add any guards when adding the new plug to the pipeline;
-  for more information about adding plugs with guards see `compile/1`.
+  for more information about adding plugs with guards see `compile/3`.
 
   ## Examples
 
@@ -178,6 +190,10 @@ defmodule Plug.Builder do
 
   """
   defmacro plug(plug, opts \\ []) do
+    # We always expand it but the @before_compile callback adds compile
+    # time dependencies back depending on the builder's init mode.
+    plug = Macro.expand(plug, %{__CALLER__ | function: {:init, 1}})
+
     quote do
       @plugs {unquote(plug), unquote(opts), true}
     end
@@ -284,7 +300,7 @@ defmodule Plug.Builder do
       Enum.reduce(pipeline, conn, fn {plug, opts, guards}, acc ->
         {plug, opts, guards}
         |> init_plug(init_mode)
-        |> quote_plug(acc, env, builder_opts)
+        |> quote_plug(init_mode, acc, env, builder_opts)
       end)
 
     {conn, ast}
@@ -304,7 +320,7 @@ defmodule Plug.Builder do
     if function_exported?(plug, :call, 2) do
       {:module, plug, escape(initialized_opts), guards}
     else
-      raise ArgumentError, message: "#{inspect(plug)} plug must implement call/2"
+      raise ArgumentError, "#{inspect(plug)} plug must implement call/2"
     end
   end
 
@@ -320,10 +336,22 @@ defmodule Plug.Builder do
     Macro.escape(opts, unquote: true)
   end
 
-  # `acc` is a series of nested plug calls in the form of
-  # plug3(plug2(plug1(conn))). `quote_plug` wraps a new plug around that series
-  # of calls.
-  defp quote_plug({plug_type, plug, opts, guards}, acc, env, builder_opts) do
+  defp quote_plug({:module, plug, opts, guards}, :compile, acc, env, builder_opts) do
+    call = quote_plug(:module, plug, opts, guards, acc, env, builder_opts)
+
+    quote do
+      require unquote(plug)
+      unquote(call)
+    end
+  end
+
+  defp quote_plug({plug_type, plug, opts, guards}, _init_mode, acc, env, builder_opts) do
+    quote_plug(plug_type, plug, opts, guards, acc, env, builder_opts)
+  end
+
+  # `acc` is a series of nested plug calls in the form of plug3(plug2(plug1(conn))).
+  # `quote_plug` wraps a new plug around that series of calls.
+  defp quote_plug(plug_type, plug, opts, guards, acc, env, builder_opts) do
     call = quote_plug_call(plug_type, plug, opts)
 
     error_message =
@@ -332,33 +360,19 @@ defmodule Plug.Builder do
         :function -> "expected #{plug}/2 to return a Plug.Conn"
       end <> ", all plugs must receive a connection (conn) and return a connection"
 
-    {fun, meta, [arg, [do: clauses]]} =
-      quote do
-        case unquote(compile_guards(call, guards)) do
-          %Plug.Conn{halted: true} = conn ->
-            unquote(log_halt(plug_type, plug, env, builder_opts))
-            conn
+    quote generated: true do
+      case unquote(compile_guards(call, guards)) do
+        %Plug.Conn{halted: true} = conn ->
+          unquote(log_halt(plug_type, plug, env, builder_opts))
+          conn
 
-          %Plug.Conn{} = conn ->
-            unquote(acc)
+        %Plug.Conn{} = conn ->
+          unquote(acc)
 
-          other ->
-            raise unquote(error_message) <> ", got: #{inspect(other)}"
-        end
+        other ->
+          raise unquote(error_message) <> ", got: #{inspect(other)}"
       end
-
-    generated? = :erlang.system_info(:otp_release) >= '19'
-
-    clauses =
-      Enum.map(clauses, fn {:->, meta, args} ->
-        if generated? do
-          {:->, [generated: true] ++ meta, args}
-        else
-          {:->, Keyword.put(meta, :line, -1), args}
-        end
-      end)
-
-    {fun, meta, [arg, [do: clauses]]}
+    end
   end
 
   defp quote_plug_call(:function, plug, opts) do

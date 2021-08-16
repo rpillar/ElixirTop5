@@ -25,12 +25,12 @@ defmodule Ecto.Adapter.Migration do
 
   @typedoc "All commands allowed within the block passed to `table/2`"
   @type table_subcommand ::
-          {:add, field :: atom, type :: Ecto.Type.t() | Reference.t(), Keyword.t()}
-          | {:add_if_not_exists, field :: atom, type :: Ecto.Type.t() | Reference.t(), Keyword.t()}
-          | {:modify, field :: atom, type :: Ecto.Type.t() | Reference.t(), Keyword.t()}
-          | {:remove, field :: atom, type :: Ecto.Type.t() | Reference.t(), Keyword.t()}
+          {:add, field :: atom, type :: Ecto.Type.t() | Reference.t() | binary(), Keyword.t()}
+          | {:add_if_not_exists, field :: atom, type :: Ecto.Type.t() | Reference.t() | binary(), Keyword.t()}
+          | {:modify, field :: atom, type :: Ecto.Type.t() | Reference.t() | binary(), Keyword.t()}
+          | {:remove, field :: atom, type :: Ecto.Type.t() | Reference.t() | binary(), Keyword.t()}
           | {:remove, field :: atom}
-          | {:remove_if_exists, type :: Ecto.Type.t() | Reference.t()}
+          | {:remove_if_exists, type :: Ecto.Type.t() | Reference.t() | binary()}
 
   @typedoc """
   A struct that represents a table or index in a database schema.
@@ -56,7 +56,7 @@ defmodule Ecto.Adapter.Migration do
 
   It returns the result of calling the given function with a list of versions.
   """
-  @callback lock_for_migrations(adapter_meta, Ecto.Query.t(), options :: Keyword.t(), fun) ::
+  @callback lock_for_migrations(adapter_meta, options :: Keyword.t(), fun) ::
               result
-            when fun: (Ecto.Query.t() -> result), result: var
+            when fun: (() -> result), result: var
 end

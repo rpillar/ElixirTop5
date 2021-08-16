@@ -20,7 +20,8 @@ defmodule Phoenix.View do
             use Phoenix.View, root: "lib/your_app_web/templates", namespace: "web"
 
             # Import convenience functions from controllers
-            import Phoenix.Controller, only: [get_flash: 1, get_flash: 2, view_module: 1]
+            import Phoenix.Controller,
+              only: [get_flash: 1, get_flash: 2, view_module: 1, view_template: 1]
 
             # Use all HTML functionality (forms, tags, etc)
             use Phoenix.HTML
@@ -194,6 +195,48 @@ defmodule Phoenix.View do
   end
 
   @doc """
+  Renders the given layout passing the given `do/end` block
+  as `@inner_content`.
+
+  This can be useful to implement nested layouts. For example,
+  imagine you have an application layout like this:
+
+      # layout/app.html.eex
+      <html>
+      <head>
+        <title>Title</title>
+      </head>
+      <body>
+        <div class="menu">...</div>
+        <%= @inner_content %>
+      </body>
+
+  This layout is used by many parts of your application. However,
+  there is a subsection of your application that wants to also add
+  a sidebar. Let's call it "blog.html". You can build on top of the
+  existing layout in two steps. First, define the blog layout:
+
+      # layout/blog.html.eex
+      <%= render_layout LayoutView, "app.html", assigns do %>
+        <div class="sidebar">...</div>
+        <%= @inner_content %>
+      <% end %>
+
+  And now you can simply use it from your controller:
+
+      plug :put_layout, "blog.html"
+
+  """
+  def render_layout(module, template, assigns, do: block) do
+    assigns =
+      assigns
+      |> Map.new()
+      |> Map.put(:inner_content, block)
+
+    module.render(template, assigns)
+  end
+
+  @doc """
   Renders a template.
 
   It expects the view module, the template as a string, and a
@@ -228,27 +271,49 @@ defmodule Phoenix.View do
   option. `:layout` accepts a tuple of the form
   `{LayoutModule, "template.extension"}`.
 
-  To render the template within the layout, simply call `render/3`
-  using the `@view_module` and `@view_template` assigns:
+  The template that goes inside the layout will be placed in the `@inner_content`
+  assign:
 
-      <%= render(@view_module, @view_template, assigns) %>
+      <%= @inner_content %>
 
   """
+  def render(module, template, assigns)
+
+  def render(module, template, %{deprecated_module_template: {module, template, content}}) do
+    IO.warn """
+    Rendering the child template from layouts is deprecated. Instead of:
+
+        <%= render(@view_module, @view_template, assigns) %>
+
+    You should do:
+
+        <%= @inner_content %>
+    """
+
+    content
+  end
+
   def render(module, template, assigns) do
     assigns
-    |> to_map()
+    |> Map.new()
+    |> Map.put(:view_module, module)
+    |> Map.put(:view_template, template)
     |> Map.pop(:layout, false)
     |> render_within(module, template)
   end
 
   defp render_within({false, assigns}, module, template) do
-    assigns = Map.merge(assigns, %{view_module: module,
-                                   view_template: template})
     module.render(template, assigns)
   end
 
-  defp render_within({layout, assigns}, inner_mod, inner_tpl) do
-    assigns = Map.merge(assigns, %{view_module: inner_mod, view_template: inner_tpl})
+  defp render_within({layout, assigns}, module, template) do
+    content = module.render(template, assigns)
+
+    assigns =
+      assigns
+      |> Map.put(:inner_content, content)
+      |> Map.put(:deprecated_module_template, {module, template, content})
+
     render_layout(layout, assigns)
   end
 
@@ -271,8 +336,9 @@ defmodule Phoenix.View do
   Renders a template only if it exists.
 
   Same as `render/3`, but returns `nil` instead of raising.
-  Useful for dynamically rendering templates in the layout that may or
-  may not be implemented by the `@view_module` view.
+  This is often used with `Phoenix.Controller.view_module/1`
+  and `Phoenix.Controller.view_template/1`, which must be
+  imported into your views. See the "Examples" section below.
 
   ## Examples
 
@@ -281,10 +347,10 @@ defmodule Phoenix.View do
   may wish to inject certain scripts, while others will not.
 
       <head>
-        <%= render_existing @view_module, "scripts.html", assigns %>
+        <%= render_existing view_module(@conn), "scripts.html", assigns %>
       </head>
 
-  Then the module for the `@view_module` view can decide to provide scripts with
+  Then the module under `view_module(@conn)` can decide to provide scripts with
   either a precompiled template, or by implementing the function directly, ie:
 
       def render("scripts.html", _assigns) do
@@ -302,7 +368,7 @@ defmodule Phoenix.View do
   `render_existing/3` for per-template based content, ie:
 
       <head>
-        <%= render_existing @view_module, "scripts." <> @view_template, assigns %>
+        <%= render_existing view_module(@conn), "scripts." <> view_template(@conn), assigns %>
       </head>
 
       def render("scripts.show.html", _assigns) do
@@ -314,7 +380,8 @@ defmodule Phoenix.View do
 
   """
   def render_existing(module, template, assigns \\ []) do
-    render(module, template, put_in(assigns[:__phx_render_existing__], {module, template}))
+    assigns = assigns |> Map.new() |> Map.put(:__phx_render_existing__, {module, template})
+    render(module, template, assigns)
   end
 
   @doc """
@@ -345,9 +412,10 @@ defmodule Phoenix.View do
 
   """
   def render_many(collection, view, template, assigns \\ %{}) do
-    assigns = to_map(assigns)
+    assigns = Map.new(assigns)
+    resource_name = get_resource_name(assigns, view)
     Enum.map(collection, fn resource ->
-      render view, template, assign_resource(assigns, view, resource)
+      render(view, template, Map.put(assigns, resource_name, resource))
     end)
   end
 
@@ -380,16 +448,21 @@ defmodule Phoenix.View do
   def render_one(resource, view, template, assigns \\ %{})
   def render_one(nil, _view, _template, _assigns), do: nil
   def render_one(resource, view, template, assigns) do
-    assigns = to_map(assigns)
+    assigns = Map.new(assigns)
     render view, template, assign_resource(assigns, view, resource)
   end
 
-  defp to_map(assigns) when is_map(assigns), do: assigns
-  defp to_map(assigns) when is_list(assigns), do: :maps.from_list(assigns)
+  @compile {:inline, [get_resource_name: 2]}
+
+  defp get_resource_name(assigns, view) do
+    case assigns do
+      %{as: as} -> as
+      _ -> view.__resource__
+    end
+  end
 
   defp assign_resource(assigns, view, resource) do
-    as = Map.get(assigns, :as) || view.__resource__
-    Map.put(assigns, as, resource)
+    Map.put(assigns, get_resource_name(assigns, view), resource)
   end
 
   @doc """

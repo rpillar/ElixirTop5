@@ -1,8 +1,8 @@
 {application,mime,
-             [{applications,[kernel,stdlib,elixir,logger]},
+             [{compile_env,[{mime,[types],error}]},
+              {applications,[kernel,stdlib,elixir,logger]},
               {description,"A MIME type module for Elixir"},
-              {modules,['Elixir.MIME','Elixir.MIME.Application']},
+              {modules,['Elixir.MIME']},
               {registered,[]},
-              {vsn,"1.3.1"},
-              {mod,{'Elixir.MIME.Application',[]}},
-              {env,[{types,#{}}]}]}.
+              {vsn,"2.0.1"},
+              {env,[]}]}.

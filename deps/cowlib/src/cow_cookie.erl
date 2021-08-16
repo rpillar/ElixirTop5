@@ -1,4 +1,4 @@
-%% Copyright (c) 2013-2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2013-2020, Loïc Hoguin <essen@ninenines.eu>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -15,16 +15,34 @@
 -module(cow_cookie).
 
 -export([parse_cookie/1]).
+-export([parse_set_cookie/1]).
+-export([cookie/1]).
 -export([setcookie/3]).
 
--type cookie_option() :: {max_age, non_neg_integer()}
-	| {domain, binary()} | {path, binary()}
-	| {secure, boolean()} | {http_only, boolean()}
-	| {same_site, lax | strict}.
--type cookie_opts() :: [cookie_option()].
+-type cookie_attrs() :: #{
+	expires => calendar:datetime(),
+	max_age => calendar:datetime(),
+	domain => binary(),
+	path => binary(),
+	secure => true,
+	http_only => true,
+	same_site => strict | lax | none
+}.
+-export_type([cookie_attrs/0]).
+
+-type cookie_opts() :: #{
+	domain => binary(),
+	http_only => boolean(),
+	max_age => non_neg_integer(),
+	path => binary(),
+	same_site => strict | lax | none,
+	secure => boolean()
+}.
 -export_type([cookie_opts/0]).
 
-%% @doc Parse a cookie header string and return a list of key/values.
+-include("cow_inline.hrl").
+
+%% Cookie header.
 
 -spec parse_cookie(binary()) -> [{binary(), binary()}].
 parse_cookie(Cookie) ->
@@ -40,22 +58,11 @@ parse_cookie(<< $,, Rest/binary >>, Acc) ->
 	parse_cookie(Rest, Acc);
 parse_cookie(<< $;, Rest/binary >>, Acc) ->
 	parse_cookie(Rest, Acc);
-parse_cookie(<< $$, Rest/binary >>, Acc) ->
-	skip_cookie(Rest, Acc);
 parse_cookie(Cookie, Acc) ->
 	parse_cookie_name(Cookie, Acc, <<>>).
 
-skip_cookie(<<>>, Acc) ->
-	lists:reverse(Acc);
-skip_cookie(<< $,, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-skip_cookie(<< $;, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-skip_cookie(<< _, Rest/binary >>, Acc) ->
-	skip_cookie(Rest, Acc).
-
 parse_cookie_name(<<>>, Acc, Name) ->
-	lists:reverse([{Name, <<>>}|Acc]);
+	lists:reverse([{<<>>, parse_cookie_trim(Name)}|Acc]);
 parse_cookie_name(<< $=, _/binary >>, _, <<>>) ->
 	error(badarg);
 parse_cookie_name(<< $=, Rest/binary >>, Acc, Name) ->
@@ -63,9 +70,7 @@ parse_cookie_name(<< $=, Rest/binary >>, Acc, Name) ->
 parse_cookie_name(<< $,, _/binary >>, _, _) ->
 	error(badarg);
 parse_cookie_name(<< $;, Rest/binary >>, Acc, Name) ->
-	parse_cookie(Rest, [{Name, <<>>}|Acc]);
-parse_cookie_name(<< $\s, _/binary >>, _, _) ->
-	error(badarg);
+	parse_cookie(Rest, [{<<>>, parse_cookie_trim(Name)}|Acc]);
 parse_cookie_name(<< $\t, _/binary >>, _, _) ->
 	error(badarg);
 parse_cookie_name(<< $\r, _/binary >>, _, _) ->
@@ -116,16 +121,6 @@ parse_cookie_test_() ->
 			{<<"name">>, <<"value">>},
 			{<<"name2">>, <<"value2">>}
 		]},
-		{<<"$Version=1; Customer=WILE_E_COYOTE; $Path=/acme">>, [
-			{<<"Customer">>, <<"WILE_E_COYOTE">>}
-		]},
-		{<<"$Version=1; Customer=WILE_E_COYOTE; $Path=/acme; "
-			"Part_Number=Rocket_Launcher_0001; $Path=/acme; "
-			"Shipping=FedEx; $Path=/acme">>, [
-			{<<"Customer">>, <<"WILE_E_COYOTE">>},
-			{<<"Part_Number">>, <<"Rocket_Launcher_0001">>},
-			{<<"Shipping">>, <<"FedEx">>}
-		]},
 		%% Space in value.
 		{<<"foo=Thu Jul 11 2013 15:38:43 GMT+0400 (MSK)">>,
 			[{<<"foo">>, <<"Thu Jul 11 2013 15:38:43 GMT+0400 (MSK)">>}]},
@@ -157,98 +152,234 @@ parse_cookie_test_() ->
 		{<<>>, []}, %% Flash player.
 		{<<"foo=bar , baz=wibble ">>, [{<<"foo">>, <<"bar , baz=wibble">>}]},
 		%% Technically invalid, but seen in the wild
-		{<<"foo">>, [{<<"foo">>, <<>>}]},
-		{<<"foo;">>, [{<<"foo">>, <<>>}]},
-		{<<"bar;foo=1">>, [{<<"bar">>, <<"">>}, {<<"foo">>, <<"1">>}]}
+		{<<"foo">>, [{<<>>, <<"foo">>}]},
+		{<<"foo ">>, [{<<>>, <<"foo">>}]},
+		{<<"foo;">>, [{<<>>, <<"foo">>}]},
+		{<<"bar;foo=1">>, [{<<>>, <<"bar">>}, {<<"foo">>, <<"1">>}]}
 	],
 	[{V, fun() -> R = parse_cookie(V) end} || {V, R} <- Tests].
 
 parse_cookie_error_test_() ->
 	%% Value.
 	Tests = [
-		<<"=">>,
-		<<"foo ">>
+		<<"=">>
 	],
 	[{V, fun() -> {'EXIT', {badarg, _}} = (catch parse_cookie(V)) end} || V <- Tests].
 -endif.
 
-%% @doc Convert a cookie name, value and options to its iodata form.
-%% @end
+%% Set-Cookie header.
+
+-spec parse_set_cookie(binary())
+	-> {ok, binary(), binary(), cookie_attrs()}
+	| ignore.
+parse_set_cookie(SetCookie) ->
+	{NameValuePair, UnparsedAttrs} = take_until_semicolon(SetCookie, <<>>),
+	{Name, Value} = case binary:split(NameValuePair, <<$=>>) of
+		[Value0] -> {<<>>, trim(Value0)};
+		[Name0, Value0] -> {trim(Name0), trim(Value0)}
+	end,
+	case {Name, Value} of
+		{<<>>, <<>>} ->
+			ignore;
+		_ ->
+			Attrs = parse_set_cookie_attrs(UnparsedAttrs, #{}),
+			{ok, Name, Value, Attrs}
+	end.
+
+parse_set_cookie_attrs(<<>>, Attrs) ->
+	Attrs;
+parse_set_cookie_attrs(<<$;,Rest0/bits>>, Attrs) ->
+	{Av, Rest} = take_until_semicolon(Rest0, <<>>),
+	{Name, Value} = case binary:split(Av, <<$=>>) of
+		[Name0] -> {trim(Name0), <<>>};
+		[Name0, Value0] -> {trim(Name0), trim(Value0)}
+	end,
+	case parse_set_cookie_attr(?LOWER(Name), Value) of
+		{ok, AttrName, AttrValue} ->
+			parse_set_cookie_attrs(Rest, Attrs#{AttrName => AttrValue});
+		{ignore, AttrName} ->
+			parse_set_cookie_attrs(Rest, maps:remove(AttrName, Attrs));
+		ignore ->
+			parse_set_cookie_attrs(Rest, Attrs)
+	end.
+
+take_until_semicolon(Rest = <<$;,_/bits>>, Acc) -> {Acc, Rest};
+take_until_semicolon(<<C,R/bits>>, Acc) -> take_until_semicolon(R, <<Acc/binary,C>>);
+take_until_semicolon(<<>>, Acc) -> {Acc, <<>>}.
+
+trim(String) ->
+	string:trim(String, both, [$\s, $\t]).
+
+parse_set_cookie_attr(<<"expires">>, Value) ->
+	try cow_date:parse_date(Value) of
+		DateTime ->
+			{ok, expires, DateTime}
+	catch _:_ ->
+		ignore
+	end;
+parse_set_cookie_attr(<<"max-age">>, Value) ->
+	try binary_to_integer(Value) of
+		MaxAge when MaxAge =< 0 ->
+			%% Year 0 corresponds to 1 BC.
+			{ok, max_age, {{0, 1, 1}, {0, 0, 0}}};
+		MaxAge ->
+			CurrentTime = erlang:universaltime(),
+			{ok, max_age, calendar:gregorian_seconds_to_datetime(
+				calendar:datetime_to_gregorian_seconds(CurrentTime) + MaxAge)}
+	catch _:_ ->
+		ignore
+	end;
+parse_set_cookie_attr(<<"domain">>, Value) ->
+	case Value of
+		<<>> ->
+			ignore;
+		<<".",Rest/bits>> ->
+			{ok, domain, ?LOWER(Rest)};
+		_ ->
+			{ok, domain, ?LOWER(Value)}
+	end;
+parse_set_cookie_attr(<<"path">>, Value) ->
+	case Value of
+		<<"/",_/bits>> ->
+			{ok, path, Value};
+		%% When the path is not absolute, or the path is empty, the default-path will be used.
+		%% Note that the default-path is also used when there are no path attributes,
+		%% so we are simply ignoring the attribute here.
+		_ ->
+			{ignore, path}
+	end;
+parse_set_cookie_attr(<<"secure">>, _) ->
+	{ok, secure, true};
+parse_set_cookie_attr(<<"httponly">>, _) ->
+	{ok, http_only, true};
+parse_set_cookie_attr(<<"samesite">>, Value) ->
+	case ?LOWER(Value) of
+		<<"strict">> ->
+			{ok, same_site, strict};
+		<<"lax">> ->
+			{ok, same_site, lax};
+		%% Clients may have different defaults than "None".
+		<<"none">> ->
+			{ok, same_site, none};
+		%% Unknown values and lack of value are equivalent.
+		_ ->
+			ignore
+	end;
+parse_set_cookie_attr(_, _) ->
+	ignore.
+
+-ifdef(TEST).
+parse_set_cookie_test_() ->
+	Tests = [
+		{<<"a=b">>, {ok, <<"a">>, <<"b">>, #{}}},
+		{<<"a=b; Secure">>, {ok, <<"a">>, <<"b">>, #{secure => true}}},
+		{<<"a=b; HttpOnly">>, {ok, <<"a">>, <<"b">>, #{http_only => true}}},
+		{<<"a=b; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Expires=Wed, 21 Oct 2015 07:29:00 GMT">>,
+			{ok, <<"a">>, <<"b">>, #{expires => {{2015,10,21},{7,29,0}}}}},
+		{<<"a=b; Max-Age=999; Max-Age=0">>,
+			{ok, <<"a">>, <<"b">>, #{max_age => {{0,1,1},{0,0,0}}}}},
+		{<<"a=b; Domain=example.org; Domain=foo.example.org">>,
+			{ok, <<"a">>, <<"b">>, #{domain => <<"foo.example.org">>}}},
+		{<<"a=b; Path=/path/to/resource; Path=/">>,
+			{ok, <<"a">>, <<"b">>, #{path => <<"/">>}}},
+		{<<"a=b; SameSite=Lax; SameSite=Strict">>,
+			{ok, <<"a">>, <<"b">>, #{same_site => strict}}}
+	],
+	[{SetCookie, fun() -> Res = parse_set_cookie(SetCookie) end}
+		|| {SetCookie, Res} <- Tests].
+-endif.
+
+%% Build a cookie header.
+
+-spec cookie([{iodata(), iodata()}]) -> iolist().
+cookie([]) ->
+	[];
+cookie([{<<>>, Value}]) ->
+	[Value];
+cookie([{Name, Value}]) ->
+	[Name, $=, Value];
+cookie([{<<>>, Value}|Tail]) ->
+	[Value, $;, $\s|cookie(Tail)];
+cookie([{Name, Value}|Tail]) ->
+	[Name, $=, Value, $;, $\s|cookie(Tail)].
+
+-ifdef(TEST).
+cookie_test_() ->
+	Tests = [
+		{[], <<>>},
+		{[{<<"a">>, <<"b">>}], <<"a=b">>},
+		{[{<<"a">>, <<"b">>}, {<<"c">>, <<"d">>}], <<"a=b; c=d">>},
+		{[{<<>>, <<"b">>}, {<<"c">>, <<"d">>}], <<"b; c=d">>},
+		{[{<<"a">>, <<"b">>}, {<<>>, <<"d">>}], <<"a=b; d">>}
+	],
+	[{Res, fun() -> Res = iolist_to_binary(cookie(Cookies)) end}
+		|| {Cookies, Res} <- Tests].
+-endif.
+
+%% Convert a cookie name, value and options to its iodata form.
 %%
 %% Initially from Mochiweb:
 %%   * Copyright 2007 Mochi Media, Inc.
 %% Initial binary implementation:
 %%   * Copyright 2011 Thomas Burdick <thomas.burdick@gmail.com>
+%%
+%% @todo Rename the function to set_cookie eventually.
 
--spec setcookie(iodata(), iodata(), cookie_opts()) -> iodata().
+-spec setcookie(iodata(), iodata(), cookie_opts()) -> iolist().
 setcookie(Name, Value, Opts) ->
 	nomatch = binary:match(iolist_to_binary(Name), [<<$=>>, <<$,>>, <<$;>>,
 			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
 	nomatch = binary:match(iolist_to_binary(Value), [<<$,>>, <<$;>>,
 			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
-	MaxAgeBin = case lists:keyfind(max_age, 1, Opts) of
-		false -> <<>>;
-		{_, 0} ->
-			%% MSIE requires an Expires date in the past to delete a cookie.
-			<<"; Expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0">>;
-		{_, MaxAge} when is_integer(MaxAge), MaxAge > 0 ->
-			UTC = calendar:universal_time(),
-			Secs = calendar:datetime_to_gregorian_seconds(UTC),
-			Expires = calendar:gregorian_seconds_to_datetime(Secs + MaxAge),
-			[<<"; Expires=">>, cow_date:rfc2109(Expires),
-				<<"; Max-Age=">>, integer_to_list(MaxAge)]
-	end,
-	DomainBin = case lists:keyfind(domain, 1, Opts) of
-		false -> <<>>;
-		{_, Domain} -> [<<"; Domain=">>, Domain]
-	end,
-	PathBin = case lists:keyfind(path, 1, Opts) of
-		false -> <<>>;
-		{_, Path} -> [<<"; Path=">>, Path]
-	end,
-	SecureBin = case lists:keyfind(secure, 1, Opts) of
-		false -> <<>>;
-		{_, false} -> <<>>;
-		{_, true} -> <<"; Secure">>
-	end,
-	HttpOnlyBin = case lists:keyfind(http_only, 1, Opts) of
-		false -> <<>>;
-		{_, false} -> <<>>;
-		{_, true} -> <<"; HttpOnly">>
-	end,
-	SameSiteBin = case lists:keyfind(same_site, 1, Opts) of
-		false -> <<>>;
-		{_, lax} -> <<"; SameSite=Lax">>;
-		{_, strict} -> <<"; SameSite=Strict">>
-	end,
-	[Name, <<"=">>, Value, <<"; Version=1">>,
-		MaxAgeBin, DomainBin, PathBin, SecureBin, HttpOnlyBin, SameSiteBin].
+	[Name, <<"=">>, Value, <<"; Version=1">>, attributes(maps:to_list(Opts))].
+
+attributes([]) -> [];
+attributes([{domain, Domain}|Tail]) -> [<<"; Domain=">>, Domain|attributes(Tail)];
+attributes([{http_only, false}|Tail]) -> attributes(Tail);
+attributes([{http_only, true}|Tail]) -> [<<"; HttpOnly">>|attributes(Tail)];
+%% MSIE requires an Expires date in the past to delete a cookie.
+attributes([{max_age, 0}|Tail]) ->
+	[<<"; Expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0">>|attributes(Tail)];
+attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge > 0 ->
+	Secs = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+	Expires = cow_date:rfc2109(calendar:gregorian_seconds_to_datetime(Secs + MaxAge)),
+	[<<"; Expires=">>, Expires, <<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
+attributes([Opt={max_age, _}|_]) ->
+	error({badarg, Opt});
+attributes([{path, Path}|Tail]) -> [<<"; Path=">>, Path|attributes(Tail)];
+attributes([{secure, false}|Tail]) -> attributes(Tail);
+attributes([{secure, true}|Tail]) -> [<<"; Secure">>|attributes(Tail)];
+attributes([{same_site, lax}|Tail]) -> [<<"; SameSite=Lax">>|attributes(Tail)];
+attributes([{same_site, strict}|Tail]) -> [<<"; SameSite=Strict">>|attributes(Tail)];
+attributes([{same_site, none}|Tail]) -> [<<"; SameSite=None">>|attributes(Tail)];
+%% Skip unknown options.
+attributes([_|Tail]) -> attributes(Tail).
 
 -ifdef(TEST).
 setcookie_test_() ->
 	%% {Name, Value, Opts, Result}
 	Tests = [
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{http_only, true}, {domain, <<"acme.com">>}],
+			#{http_only => true, domain => <<"acme.com">>},
 			<<"Customer=WILE_E_COYOTE; Version=1; "
 				"Domain=acme.com; HttpOnly">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{path, <<"/acme">>}],
+			#{path => <<"/acme">>},
 			<<"Customer=WILE_E_COYOTE; Version=1; Path=/acme">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{secure, true}],
+			#{secure => true},
 			<<"Customer=WILE_E_COYOTE; Version=1; Secure">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{secure, false}, {http_only, false}],
+			#{secure => false, http_only => false},
 			<<"Customer=WILE_E_COYOTE; Version=1">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{same_site, lax}],
+			#{same_site => lax},
 			<<"Customer=WILE_E_COYOTE; Version=1; SameSite=Lax">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{same_site, strict}],
+			#{same_site => strict},
 			<<"Customer=WILE_E_COYOTE; Version=1; SameSite=Strict">>},
 		{<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{path, <<"/acme">>}, {badoption, <<"negatory">>}],
+			#{path => <<"/acme">>, badoption => <<"negatory">>},
 			<<"Customer=WILE_E_COYOTE; Version=1; Path=/acme">>}
 	],
 	[{R, fun() -> R = iolist_to_binary(setcookie(N, V, O)) end}
@@ -264,20 +395,20 @@ setcookie_max_age_test() ->
 		<<" Expires=", _/binary>>,
 		<<" Max-Age=111">>,
 		<<" Secure">>] = F(<<"Customer">>, <<"WILE_E_COYOTE">>,
-			[{max_age, 111}, {secure, true}]),
-	case catch F(<<"Customer">>, <<"WILE_E_COYOTE">>, [{max_age, -111}]) of
-		{'EXIT', {{case_clause, {max_age, -111}}, _}} -> ok
+			#{max_age => 111, secure => true}),
+	case catch F(<<"Customer">>, <<"WILE_E_COYOTE">>, #{max_age => -111}) of
+		{'EXIT', {{badarg, {max_age, -111}}, _}} -> ok
 	end,
 	[<<"Customer=WILE_E_COYOTE">>,
 		<<" Version=1">>,
 		<<" Expires=", _/binary>>,
 		<<" Max-Age=86417">>] = F(<<"Customer">>, <<"WILE_E_COYOTE">>,
-			 [{max_age, 86417}]),
+			 #{max_age => 86417}),
 	ok.
 
 setcookie_failures_test_() ->
 	F = fun(N, V) ->
-		try setcookie(N, V, []) of
+		try setcookie(N, V, #{}) of
 			_ ->
 				false
 		catch _:_ ->

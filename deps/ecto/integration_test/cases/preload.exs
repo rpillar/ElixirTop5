@@ -6,6 +6,7 @@ defmodule Ecto.Integration.PreloadTest do
 
   alias Ecto.Integration.Post
   alias Ecto.Integration.Comment
+  alias Ecto.Integration.Item
   alias Ecto.Integration.Permalink
   alias Ecto.Integration.User
   alias Ecto.Integration.Custom
@@ -37,9 +38,21 @@ defmodule Ecto.Integration.PreloadTest do
     assert %Ecto.Association.NotLoaded{} = p1.comments
 
     [p3, p1, p2] = TestRepo.preload([p3, p1, p2], :comments)
-    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id
-    assert [%Comment{id: ^cid3}, %Comment{id: ^cid4}] = p2.comments |> sort_by_id
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
+    assert [%Comment{id: ^cid3}, %Comment{id: ^cid4}] = p2.comments |> sort_by_id()
     assert [] = p3.comments
+  end
+
+  test "preload has_many multiple times" do
+    p1 = TestRepo.insert!(%Post{title: "1"})
+    %Comment{id: cid1} = TestRepo.insert!(%Comment{text: "1", post_id: p1.id})
+    %Comment{id: cid2} = TestRepo.insert!(%Comment{text: "2", post_id: p1.id})
+
+    [p1, p1] = TestRepo.preload([p1, p1], :comments)
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
+
+    [p1, p1] = TestRepo.preload([p1, p1], :comments)
+    assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id()
   end
 
   test "preload has_one" do
@@ -76,7 +89,18 @@ defmodule Ecto.Integration.PreloadTest do
     assert %Post{id: ^pid3} = pl3.post
   end
 
-  test "preload belongs_to with shared assocs" do
+  test "preload multiple belongs_to" do
+    %User{id: uid} = TestRepo.insert!(%User{name: "foo"})
+    %Post{id: pid} = TestRepo.insert!(%Post{title: "1"})
+    %Comment{id: cid} = TestRepo.insert!(%Comment{post_id: pid, author_id: uid})
+
+    comment = TestRepo.get!(Comment, cid)
+    comment = TestRepo.preload(comment, [:author, :post])
+    assert comment.author.id == uid
+    assert comment.post.id == pid
+  end
+
+  test "preload belongs_to with shared parent" do
     %Post{id: pid1} = TestRepo.insert!(%Post{title: "1"})
     %Post{id: pid2} = TestRepo.insert!(%Post{title: "2"})
 
@@ -152,8 +176,8 @@ defmodule Ecto.Integration.PreloadTest do
     %Post{id: pid1} = TestRepo.insert!(%Post{})
     %Post{id: pid2} = TestRepo.insert!(%Post{})
 
-    %Permalink{id: lid1} = TestRepo.insert!(%Permalink{post_id: pid1})
-    %Permalink{id: lid2} = TestRepo.insert!(%Permalink{post_id: pid2})
+    %Permalink{id: lid1} = TestRepo.insert!(%Permalink{post_id: pid1, url: "1"})
+    %Permalink{id: lid2} = TestRepo.insert!(%Permalink{post_id: pid2, url: "2"})
 
     %Comment{} = c1 = TestRepo.insert!(%Comment{post_id: pid1})
     %Comment{} = c2 = TestRepo.insert!(%Comment{post_id: pid1})
@@ -191,8 +215,8 @@ defmodule Ecto.Integration.PreloadTest do
     %Post{id: pid1} = TestRepo.insert!(%Post{})
     %Post{id: pid2} = TestRepo.insert!(%Post{})
 
-    %Permalink{} = l1 = TestRepo.insert!(%Permalink{post_id: pid1})
-    %Permalink{} = l2 = TestRepo.insert!(%Permalink{post_id: pid2})
+    %Permalink{} = l1 = TestRepo.insert!(%Permalink{post_id: pid1, url: "1"})
+    %Permalink{} = l2 = TestRepo.insert!(%Permalink{post_id: pid2, url: "2"})
 
     %User{id: uid1} = TestRepo.insert!(%User{name: "foo"})
     %User{id: uid2} = TestRepo.insert!(%User{name: "bar"})
@@ -387,7 +411,7 @@ defmodule Ecto.Integration.PreloadTest do
 
     # With custom select
     assert [pe3, pe1, pe2] = TestRepo.preload([p3, p1, p2],
-                                              comments: from(c in Comment, select: c.id))
+                                              comments: from(c in Comment, select: c.id, order_by: c.id))
     assert [^cid1, ^cid2] = pe1.comments
     assert [^cid3, ^cid4] = pe2.comments
     assert [] = pe3.comments
@@ -528,6 +552,21 @@ defmodule Ecto.Integration.PreloadTest do
     assert p2.id == c4.post.id
   end
 
+  test "custom preload_order" do
+    post = TestRepo.insert!(%Post{users: [%User{name: "bar"}, %User{name: "foo"}], title: "1"})
+
+    TestRepo.insert!(%Comment{text: "2", post_id: post.id})
+    TestRepo.insert!(%Comment{text: "1", post_id: post.id})
+
+    post = TestRepo.preload(post, [:ordered_comments, :ordered_users])
+
+    # asc
+    assert [%{text: "1"}, %{text: "2"}] = post.ordered_comments
+
+    # desc
+    assert [%{name: "foo"}, %{name: "bar"}] = post.ordered_users
+  end
+
   ## Others
 
   @tag :invalid_prefix
@@ -553,16 +592,16 @@ defmodule Ecto.Integration.PreloadTest do
     assert u.custom.bid == c.bid
   end
 
-  test "preload skips with association set but without id" do
+  test "preload raises with association set but without id" do
     c1 = TestRepo.insert!(%Comment{text: "1"})
     u1 = TestRepo.insert!(%User{name: "name"})
-    p1 = TestRepo.insert!(%Post{title: "title"})
+    updated = %{c1 | author: u1, author_id: nil}
 
-    c1 = %{c1 | author: u1, author_id: nil, post: p1, post_id: nil}
+    assert ExUnit.CaptureLog.capture_log(fn ->
+      assert TestRepo.preload(updated, [:author]).author == u1
+    end) =~ ~r/its association key `author_id` is nil/
 
-    c1 = TestRepo.preload(c1, [:author, :post])
-    assert c1.author == u1
-    assert c1.post == p1
+    assert TestRepo.preload(updated, [:author], force: true).author == nil
   end
 
   test "preload skips already loaded for cardinality one" do
@@ -654,6 +693,19 @@ defmodule Ecto.Integration.PreloadTest do
     assert [%Comment{id: ^cid1}, %Comment{id: ^cid2}] = p1.comments |> sort_by_id
     assert [%Comment{id: ^cid3}, %Comment{id: ^cid4}] = p2.comments |> sort_by_id
     assert [] = p3.comments
+  end
+
+
+  test "preload belongs_to in embedded_schema" do
+    %User{id: uid1} = TestRepo.insert!(%User{name: "1"})
+    item = %Item{user_id: uid1}
+
+    # Starts as not loaded
+    assert %Ecto.Association.NotLoaded{} = item.user
+
+    # Now we preload it
+    item = TestRepo.preload(item, :user)
+    assert %User{id: ^uid1} = item.user
   end
 
   defp sort_by_id(values) do

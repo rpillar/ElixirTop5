@@ -1,41 +1,43 @@
 defmodule Plug.Crypto.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
-  @description "Crypto-related functionality for the web, used by Plug."
+  @version "1.2.2"
+  @description "Crypto-related functionality for the web"
+  @source_url "https://github.com/elixir-plug/plug_crypto"
 
   def project do
     [
       app: :plug_crypto,
       version: @version,
-      elixir: "~> 1.4",
+      elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),
       name: "Plug.Crypto",
       description: @description,
       docs: [
-        extras: ["README.md"],
-        main: "readme",
+        main: "Plug.Crypto",
         source_ref: "v#{@version}",
-        source_url: "https://github.com/elixir-plug/plug"
+        source_url: @source_url,
+        extras: ["CHANGELOG.md"]
       ]
     ]
   end
 
   def application do
     [
-      extra_applications: [:crypto]
+      extra_applications: [:crypto],
+      mod: {Plug.Crypto.Application, []}
     ]
   end
 
   defp deps do
-    [{:ex_doc, "~> 0.19.1", only: :dev}]
+    [{:ex_doc, "~> 0.21", only: :dev}]
   end
 
   defp package do
     %{
-      licenses: ["Apache 2"],
+      licenses: ["Apache-2.0"],
       maintainers: [
         "Aleksei Magusev",
         "Andrea Leopardi",
@@ -43,8 +45,8 @@ defmodule Plug.Crypto.MixProject do
         "Gary Rennie",
         "José Valim"
       ],
-      links: %{"GitHub" => "https://github.com/elixir-plug/plug_crypto"},
-      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md"]
+      links: %{"GitHub" => @source_url},
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE"]
     }
   end
 end

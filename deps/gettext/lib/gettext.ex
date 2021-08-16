@@ -18,15 +18,33 @@ defmodule Gettext do
       import MyApp.Gettext
 
       # Simple translation
-      gettext "Here is the string to translate"
+      gettext("Here is the string to translate")
 
       # Plural translation
-      ngettext "Here is the string to translate",
-               "Here are the strings to translate",
-               3
+      ngettext(
+        "Here is the string to translate",
+        "Here are the strings to translate",
+        3
+      )
 
       # Domain-based translation
-      dgettext "errors", "Here is the error message to translate"
+      dgettext("errors", "Here is the error message to translate")
+
+      # Context-based translation
+      pgettext("email", "Email text to translate")
+
+      # All of the above
+      dpngettext(
+        "errors",
+        "context",
+        "Here is the string to translate",
+        "Here are the strings to translate",
+        3
+      )
+
+  The arguments for the Gettext macros and their order can be derived froe
+  their names. For `dpgettext/4` the arguments are: `domain`, `context`,
+  `msgid`, `bindings` (default to `%{}`).
 
   Translations are looked up from `.po` files. In the following sections we will
   explore exactly what are those files before we explore the "Gettext API" in
@@ -42,7 +60,7 @@ defmodule Gettext do
       msgstr "Ciao mondo!"
 
   PO files containing translations for an application must be stored in a
-  directory (by default it's `priv/gettext`) that has the following struture:
+  directory (by default it's `priv/gettext`) that has the following structure:
 
       gettext directory
       └─ locale
@@ -128,18 +146,30 @@ defmodule Gettext do
   By default the global locale is `"en"`. See also `get_locale/0` and
   `put_locale/1`.
 
-  If for some reason a backend requires with a different `:default_locale`
+  If for some reason a backend requires a different `:default_locale`
   than all other backends, you can set the `:default_locale` inside the
   backend configuration, but this approach is generally discouraged as
   it makes it hard to track which locale each backend is using:
 
       config :my_app, MyApp.Gettext, default_locale: "fr"
 
+  ### Default Domain
+
+  Each backend can be configured with a specific `:default_domain`
+  that replaces `"default"` in `gettext/2`, `pgettext/3`, and `ngettext/4`
+  for that backend.
+
+      defmodule MyApp.Gettext do
+        use Gettext, otp_app: :my_app, default_domain: "messages"
+      end
+
+      config :my_app, MyApp.Gettext, default_domain: "translations"
+
   ## Gettext API
 
-  There are two ways to use gettext:
+  There are two ways to use Gettext:
 
-    * using macros from your own gettext module, like `MyApp.Gettext`
+    * using macros from your own Gettext module, like `MyApp.Gettext`
     * using functions from the `Gettext` module
 
   These two approaches are different and each one has its own use case.
@@ -153,52 +183,73 @@ defmodule Gettext do
 
     * `gettext/2`
     * `dgettext/3`
+    * `pgettext/3`
+    * `dpgettext/4`
     * `ngettext/4`
     * `dngettext/5`
-    * `gettext_noop/1`, `dgettext_noop/2`, `ngettext_noop/3`, `dngettext_noop/4`
+    * `pngettext/5`
+    * `dpngettext/6`
+    * all macros above with a `_noop` suffix (and without accepting bindings), for
+      example `pgettext_noop/2`
 
   Supposing the caller module is `MyApp.Gettext`, the macros mentioned above
   behave as follows:
 
     * `gettext(msgid, bindings \\ %{})` -
       like `Gettext.gettext(MyApp.Gettext, msgid, bindings)`
+
     * `dgettext(domain, msgid, bindings \\ %{})` -
       like `Gettext.dgettext(MyApp.Gettext, domain, msgid, bindings)`
+
+    * `pgettext(msgctxt, msgid, bindings \\ %{})` -
+      like `Gettext.pgettext(MyApp.Gettext, msgctxt, msgid, bindings)`
+
+    * `dpgettext(domain, msgctxt, msgid, bindings \\ %{})` -
+      like `Gettext.dpgettext(MyApp.Gettext, domain, msgctxt, msgid, bindings)`
+
     * `ngettext(msgid, msgid_plural, n, bindings \\ %{})` -
       like `Gettext.ngettext(MyApp.Gettext, msgid, msgid_plural, n, bindings)`
+
     * `dngettext(domain, msgid, msgid_plural, n, bindings \\ %{})` -
       like `Gettext.dngettext(MyApp.Gettext, domain, msgid, msgid_plural, n, bindings)`
+
+    * `pngettext(msgctxt, msgid, msgid_plural, n, bindings \\ %{})` -
+      like `Gettext.pngettext(MyApp.Gettext, msgctxt, msgid, msgid_plural, n, bindings)`
+
+    * `dpngettext(domain, msgctxt, msgid, msgid_plural, n, bindings \\ %{})` -
+      like `Gettext.dpngettext(MyApp.Gettext, domain, msgctxt, msgid, msgid_plural, n, bindings)`
+
     * `*_noop` family of functions - used to mark translations for extraction
-      without translating them; see the documentation for these macros in
+      without translating them. See the documentation for these macros in
       `Gettext.Backend`
 
   See also the `Gettext.Backend` behaviour for more detailed documentation about
   these macros.
 
-  Using macros is preferred as gettext is able to automatically sync the
+  Using macros is preferred as Gettext is able to automatically sync the
   translations in your code with PO files. This, however, imposes a constraint:
   arguments passed to any of these macros have to be strings **at compile
   time**. This means that they have to be string literals or something that
   expands to a string literal at compile time (for example, a module attribute like
   `@my_string "foo"`).
 
-  These are all valid uses of the gettext macros:
+  These are all valid uses of the Gettext macros:
 
-      Gettext.put_locale MyApp.Gettext, "it"
+      Gettext.put_locale(MyApp.Gettext, "it")
 
-      MyApp.Gettext.gettext "Hello world"
+      MyApp.Gettext.gettext("Hello world")
       #=> "Ciao mondo"
 
       @msgid "Hello world"
-      MyApp.Gettext.gettext @msgid
+      MyApp.Gettext.gettext(@msgid)
       #=> "Ciao mondo"
 
-  The `gettext`/`dgettext`/`ngettext`/`dngettext` macros raise an
-  `ArgumentError` exception if they receive a `domain`, `msgid`, or
-  `msgid_plural` that doesn't expand to a string at compile time:
+  The `*gettext` macros raise an `ArgumentError` exception if they receive a
+  `domain`, `msgctxt`, `msgid`, or `msgid_plural` that doesn't expand to a string
+  *at compile time*:
 
       msgid = "Hello world"
-      MyApp.Gettext.gettext msgid
+      MyApp.Gettext.gettext(msgid)
       #=> ** (ArgumentError) msgid must be a string literal
 
   Using compile-time strings isn't always possible. For this reason,
@@ -215,7 +266,7 @@ defmodule Gettext do
         use Gettext, otp_app: :my_app
       end
 
-      Gettext.put_locale MyApp.Gettext, "pt_BR"
+      Gettext.put_locale(MyApp.Gettext, "pt_BR")
 
       msgid = "Hello world"
       Gettext.gettext(MyApp.Gettext, msgid)
@@ -233,14 +284,28 @@ defmodule Gettext do
   translations in the `it/LC_MESSAGES/errors.po` file is `"errors"`, so those
   translations would need to be retrieved with `dgettext` or `dngettext`:
 
-      MyApp.Gettext.dgettext "errors", "Error!"
+      MyApp.Gettext.dgettext("errors", "Error!")
       #=> "Errore!"
 
-  When `gettext` or `ngettext` are used, the `"default"` domain is used.
+  When backend `gettext`, `ngettext`, or `pgettext` are used, the backend's
+  default domain is used (which defaults to "default"). The `Gettext`
+  functions accepting a backend (`gettext/3`, `ngettext/5`, and `pgettext/4`)
+  _always_ use a domain of "default".
+
+  ## Contexts
+
+  The GNU Gettext implementation supports
+  [*contexts*](https://www.gnu.org/software/gettext/manual/html_node/Contexts.html),
+  which are a way to contextualize translations. For example, in English, the
+  word "file" could be used both as a noun as well as a verb. Contexts can be used to
+  solve similar problems: you could have a `imperative_verbs` context and a
+  `nouns` context as to avoid ambiguity. The functions that handle contexts
+  have a `p` in their name (to match the GNU Gettext API), and are `pgettext`,
+  `dpgettext`, `pngettext`, and `dpngettext`. The "p" stands for "particular".
 
   ## Interpolation
 
-  All `*gettext` functions and macros provided by gettext support interpolation.
+  All `*gettext` functions and macros provided by Gettext support interpolation.
   Interpolation keys can be placed in `msgid`s or `msgid_plural`s with by
   enclosing them in `%{` and `}`, like this:
 
@@ -255,24 +320,24 @@ defmodule Gettext do
 
   interpolation can be done like follows:
 
-      Gettext.put_locale MyApp.Gettext, "it"
-      MyApp.Gettext.gettext "Hello, %{name}!", name: "Meg"
+      Gettext.put_locale(MyApp.Gettext, "it")
+      MyApp.Gettext.gettext("Hello, %{name}!", name: "Meg")
       #=> "Ciao, Meg!"
 
   Interpolation keys that are in a string but not in the provided bindings
   result in a `Gettext.Error` exception:
 
-      MyApp.Gettext.gettext "Hello, %{name}!"
+      MyApp.Gettext.gettext("Hello, %{name}!")
       #=> ** (Gettext.Error) missing interpolation keys: name
 
   Keys that are in the interpolation bindings but that don't occur in the string
-  are ignored. Interpolations in gettext are often expanded at compile time,
+  are ignored. Interpolations in Gettext are often expanded at compile time,
   ensuring a low performance cost when running them at runtime.
 
   ## Pluralization
 
-  Pluralization in gettext for Elixir works very similar to how pluralization
-  works in GNU gettext. The `*ngettext` functions/macros accept a `msgid`, a
+  Pluralization in Gettext for Elixir works very similar to how pluralization
+  works in GNU Gettext. The `*ngettext` functions/macros accept a `msgid`, a
   `msgid_plural` and a count of elements; the right translation is chosen based
   on the **pluralization rule** for the given locale.
 
@@ -285,8 +350,8 @@ defmodule Gettext do
 
   the `ngettext` macro can be used like this:
 
-      Gettext.put_locale MyApp.Gettext, "it"
-      MyApp.Gettext.ngettext "One error", "%{count} errors", 3
+      Gettext.put_locale(MyApp.Gettext, "it")
+      MyApp.Gettext.ngettext("One error", "%{count} errors", 3)
       #=> "3 errori"
 
   The `%{count}` interpolation key is a special key since it gets replaced by
@@ -295,7 +360,7 @@ defmodule Gettext do
   `count` key in the bindings:
 
       # `count: 4` is ignored here
-      MyApp.Gettext.ngettext "One error", "%{count} errors", 3, count: 4
+      MyApp.Gettext.ngettext("One error", "%{count} errors", 3, count: 4)
       #=> "3 errori"
 
   You can specify a "pluralizer" module via the `:plural_forms` option in the
@@ -313,18 +378,18 @@ defmodule Gettext do
   When a translation is missing in the specified locale (both with functions as
   well as with macros), the argument is returned:
 
-    * in case of calls to `gettext`/`dgettext`, the `msgid` argument is returned
+    * in case of calls to `gettext`/`dgettext`/`pgettext`/`dpgettext`, the `msgid` argument is returned
       as is;
-    * in case of calls to `ngettext`/`dngettext`, the `msgid` argument is
+    * in case of calls to `ngettext`/`dngettext`/`pngettext`/`dpngettext`, the `msgid` argument is
       returned in case of a singular value and the `msgid_plural` is returned in
       case of a plural value (following the English pluralization rule).
 
   For example:
 
-      Gettext.put_locale MyApp.Gettext, "foo"
-      MyApp.Gettext.gettext "Hey there"
+      Gettext.put_locale(MyApp.Gettext, "foo")
+      MyApp.Gettext.gettext("Hey there")
       #=> "Hey there"
-      MyApp.Gettext.ngettext "One error", "%{count} errors", 3
+      MyApp.Gettext.ngettext("One error", "%{count} errors", 3)
       #=> "3 errors"
 
   ### Empty translations
@@ -334,25 +399,10 @@ defmodule Gettext do
   translation is considered to have an empty `msgstr` if at least one
   translation in the `msgstr` is empty.
 
-  ## Contexts
-
-  The GNU Gettext implementation supports
-  [*contexts*](https://www.gnu.org/software/gettext/manual/html_node/Contexts.html),
-  which are a way to "contextualize" translations. For example, in English, the
-  word "file" could be used both as a noun or as a verb. Contexts can be used to
-  solve similar problems: one could have a "imperative_verbs" context and a
-  "nouns" context as to avoid ambiguity. However, contexts increase the
-  complexity of Gettext and would increase the complexity of the implementation
-  of Gettext for Elixir, and for this reason we decided to not support them. The
-  problem they try to solve can still be solved just using domains: for example,
-  one could have the `default-imperative_verbs` domain and the `default-nouns`
-  domain and use the `d(n)gettext` family of macros/functions, and the final
-  result would be similar
-
   ## Compile-time features
 
-  As mentioned above, using the gettext macros (as opposed to functions) allows
-  gettext to operate on those translations *at compile-time*. This can be used
+  As mentioned above, using the Gettext macros (as opposed to functions) allows
+  Gettext to operate on those translations *at compile-time*. This can be used
   to extract translations from the source code into POT files automatically
   (instead of having to manually add translations to POT files when they're added
   to the source code). The `gettext.extract` does exactly this: whenever there
@@ -377,7 +427,7 @@ defmodule Gettext do
   version of the POT files in `priv/gettext`. Read more about the merging
   process in the documentation for `Mix.Tasks.Gettext.Merge`.
 
-  Finally, gettext is able to recompile modules that call `use Gettext` whenever
+  Finally, Gettext is able to recompile modules that call `use Gettext` whenever
   PO files change. To enable this feature, the `:gettext` compiler needs to be
   added to the list of Mix compilers. In `mix.exs`:
 
@@ -438,6 +488,11 @@ defmodule Gettext do
       This reduces compilation times and beam file sizes for large projects.
       This option requires Elixir v1.6.
 
+    * `:allowed_locales` - a list of locales to bundle in the backend.
+      Defaults to all the locales discovered in the `:priv` directory.
+      This option can be useful in development to reduce compile-time
+      by compiling only a subset of all available locales.
+
   ### Mix tasks configuration
 
   You can configure Gettext Mix tasks under the `:gettext` key in the
@@ -472,6 +527,11 @@ defmodule Gettext do
       reference comments will not be written when extracting translations or merging
       translations, and the ones already found in files will be discarded.
 
+    * `:sort_by_msgid` - a boolean that modifies the sorting behavior.
+      By default, the order of existing translations in a POT file is kept and new
+      translations are appended to the file. If `:sort_by_msgid` is set to `true`,
+      existing and new translations will be mixed and sorted alphabetically by msgid.
+
   """
 
   defmodule Error do
@@ -482,25 +542,39 @@ defmodule Gettext do
     defexception [:message]
   end
 
+  defmodule PluralFormError do
+    @enforce_keys [:form, :locale, :file, :line]
+    defexception [:form, :locale, :file, :line]
+
+    @type t() :: %__MODULE__{}
+
+    def message(%{form: form, locale: locale, file: file, line: line}) do
+      "plural form #{form} is required for locale #{inspect(locale)} " <>
+        "but is missing for translation compiled from #{file}:#{line}"
+    end
+  end
+
   defmodule MissingBindingsError do
     @moduledoc """
     An error message raised for missing bindings errors.
     """
 
-    @enforce_keys [:backend, :domain, :locale, :msgid, :missing]
-    defexception [:backend, :domain, :locale, :msgid, :missing]
+    @enforce_keys [:backend, :domain, :msgctxt, :locale, :msgid, :missing]
+    defexception [:backend, :domain, :msgctxt, :locale, :msgid, :missing]
 
     @type t() :: %__MODULE__{}
 
     def message(%{
           backend: backend,
           domain: domain,
+          msgctxt: msgctxt,
           locale: locale,
           msgid: msgid,
           missing: missing
         }) do
       "missing Gettext bindings: #{inspect(missing)} (backend #{inspect(backend)}, " <>
-        "locale #{inspect(locale)}, domain #{inspect(domain)}, msgid #{inspect(msgid)})"
+        "locale #{inspect(locale)}, domain #{inspect(domain)}, msgctxt #{inspect(msgctxt)}, " <>
+        "msgid #{inspect(msgid)})"
     end
   end
 
@@ -510,10 +584,15 @@ defmodule Gettext do
 
   @doc false
   defmacro __using__(opts) do
+    env_fun =
+      if function_exported?(Application, :compile_env, 3), do: :compile_env, else: :get_env
+
     quote do
       require Logger
 
-      @gettext_opts unquote(opts)
+      opts = unquote(opts)
+      otp_app = Keyword.fetch!(opts, :otp_app)
+      @gettext_opts Keyword.merge(opts, Application.unquote(env_fun)(otp_app, __MODULE__, []))
       @before_compile Gettext.Compiler
 
       def handle_missing_bindings(exception, incomplete) do
@@ -565,9 +644,7 @@ defmodule Gettext do
   """
   @spec get_locale() :: locale
   def get_locale() do
-    if locale = Process.get(Gettext) do
-      locale
-    else
+    with nil <- Process.get(Gettext) do
       # If this is not set by the user, it's still set in mix.exs (to "en").
       Application.fetch_env!(:gettext, :default_locale)
     end
@@ -610,7 +687,10 @@ defmodule Gettext do
   """
   @spec get_locale(backend) :: locale
   def get_locale(backend) do
-    Process.get(backend) || Process.get(Gettext) || backend.__gettext__(:default_locale)
+    with nil <- Process.get(backend),
+         nil <- Process.get(Gettext) do
+      backend.__gettext__(:default_locale)
+    end
   end
 
   @doc """
@@ -632,6 +712,47 @@ defmodule Gettext do
 
   def put_locale(_backend, locale),
     do: raise(ArgumentError, "put_locale/2 only accepts binary locales, got: #{inspect(locale)}")
+
+  @doc """
+  Returns the translation of the given string with a given context in the given domain.
+
+  The string is translated by the `backend` module.
+
+  The translated string is interpolated based on the `bindings` argument. For
+  more information on how interpolation works, refer to the documentation of the
+  `Gettext` module.
+
+  If the translation for the given `msgid` is not found, the `msgid`
+  (interpolated if necessary) is returned.
+
+  ## Examples
+
+      defmodule MyApp.Gettext do
+        use Gettext, otp_app: :my_app
+      end
+
+      Gettext.put_locale(MyApp.Gettext, "it")
+
+      Gettext.dpgettext(MyApp.Gettext, "errors", "user error", "Invalid")
+      #=> "Non valido"
+
+      Gettext.dgettext(MyApp.Gettext, "errors", "signup form", "%{name} is not a valid name", name: "Meg")
+      #=> "Meg non è un nome valido"
+
+  """
+  @spec dpgettext(module, binary, binary | nil, binary, bindings) :: binary
+  def dpgettext(backend, domain, msgctxt, msgid, bindings \\ %{})
+
+  def dpgettext(backend, domain, msgctxt, msgid, bindings) when is_list(bindings) do
+    dpgettext(backend, domain, msgctxt, msgid, Map.new(bindings))
+  end
+
+  def dpgettext(backend, domain, msgctxt, msgid, bindings)
+      when is_atom(backend) and is_binary(domain) and is_binary(msgid) and is_map(bindings) do
+    locale = get_locale(backend)
+    result = backend.lgettext(locale, domain, msgctxt, msgid, bindings)
+    handle_backend_result(result, backend, locale, domain, msgctxt, msgid)
+  end
 
   @doc """
   Returns the translation of the given string in the given domain.
@@ -664,17 +785,42 @@ defmodule Gettext do
 
   """
   @spec dgettext(module, binary, binary, bindings) :: binary
-  def dgettext(backend, domain, msgid, bindings \\ %{})
-
-  def dgettext(backend, domain, msgid, bindings) when is_list(bindings) do
-    dgettext(backend, domain, msgid, Map.new(bindings))
+  def dgettext(backend, domain, msgid, bindings \\ %{}) do
+    dpgettext(backend, domain, nil, msgid, bindings)
   end
 
-  def dgettext(backend, domain, msgid, bindings)
-      when is_atom(backend) and is_binary(domain) and is_binary(msgid) and is_map(bindings) do
-    locale = get_locale(backend)
-    result = backend.lgettext(locale, domain, msgid, bindings)
-    handle_backend_result(result, backend, locale, domain, msgid)
+  @doc """
+  Returns the translation of the given string with the given context
+
+  The string is translated by the `backend` module.
+
+  The translated string is interpolated based on the `bindings` argument. For
+  more information on how interpolation works, refer to the documentation of the
+  `Gettext` module.
+
+  If the translation for the given `msgid` is not found, the `msgid`
+  (interpolated if necessary) is returned.
+
+  ## Examples
+
+      defmodule MyApp.Gettext do
+        use Gettext, otp_app: :my_app
+      end
+
+      Gettext.put_locale(MyApp.Gettext, "it")
+
+      Gettext.pgettext(MyApp.Gettext, "user-interface", "Invalid")
+      #=> "Non valido"
+
+      Gettext.pgettext(MyApp.Gettext, "user-interface", "%{name} is not a valid name", name: "Meg")
+      #=> "Meg non è un nome valido"
+
+      Gettext.pgettext(MyApp.Gettext, "alerts-users", "nonexisting")
+      #=> "nonexisting"
+  """
+  @spec pgettext(module, binary, binary, bindings) :: binary
+  def pgettext(backend, msgctxt, msgid, bindings \\ %{}) do
+    dpgettext(backend, "default", msgctxt, msgid, bindings)
   end
 
   @doc """
@@ -688,6 +834,48 @@ defmodule Gettext do
   @spec gettext(module, binary, bindings) :: binary
   def gettext(backend, msgid, bindings \\ %{}) do
     dgettext(backend, "default", msgid, bindings)
+  end
+
+  @doc """
+  Returns the pluralized translation of the given string with a given context in the given domain.
+
+  The string is translated and pluralized by the `backend` module.
+
+  The translated string is interpolated based on the `bindings` argument. For
+  more information on how interpolation works, refer to the documentation of the
+  `Gettext` module.
+
+  If the translation for the given `msgid` and `msgid_plural` is not found, the
+  `msgid` or `msgid_plural` (based on `n` being singular or plural) is returned
+  (interpolated if necessary).
+
+  ## Examples
+
+      defmodule MyApp.Gettext do
+        use Gettext, otp_app: :my_app
+      end
+
+      Gettext.dpngettext(MyApp.Gettext, "errors", "user error", "Error", "%{count} errors", 3)
+      #=> "3 errori"
+      Gettext.dpngettext(MyApp.Gettext, "errors", "user error", "Error", "%{count} errors", 1)
+      #=> "Errore"
+
+  """
+  @spec dpngettext(module, binary, binary | nil, binary, binary, non_neg_integer, bindings) ::
+          binary
+  def dpngettext(backend, domain, msgctxt, msgid, msgid_plural, n, bindings \\ %{})
+
+  def dpngettext(backend, domain, msgctxt, msgid, msgid_plural, n, bindings)
+      when is_list(bindings) do
+    dpngettext(backend, domain, msgctxt, msgid, msgid_plural, n, Map.new(bindings))
+  end
+
+  def dpngettext(backend, domain, msgctxt, msgid, msgid_plural, n, bindings)
+      when is_atom(backend) and is_binary(domain) and is_binary(msgid) and is_binary(msgid_plural) and
+             is_integer(n) and n >= 0 and is_map(bindings) do
+    locale = get_locale(backend)
+    result = backend.lngettext(locale, domain, msgctxt, msgid, msgid_plural, n, bindings)
+    handle_backend_result(result, backend, locale, domain, msgctxt, msgid)
   end
 
   @doc """
@@ -716,19 +904,21 @@ defmodule Gettext do
 
   """
   @spec dngettext(module, binary, binary, binary, non_neg_integer, bindings) :: binary
-  def dngettext(backend, domain, msgid, msgid_plural, n, bindings \\ %{})
+  def dngettext(backend, domain, msgid, msgid_plural, n, bindings),
+    do: dpngettext(backend, domain, nil, msgid, msgid_plural, n, bindings)
 
-  def dngettext(backend, domain, msgid, msgid_plural, n, bindings) when is_list(bindings) do
-    dngettext(backend, domain, msgid, msgid_plural, n, Map.new(bindings))
-  end
+  @doc """
+  Returns the pluralized translation of the given string with a given context
+  in the `"default"` domain.
 
-  def dngettext(backend, domain, msgid, msgid_plural, n, bindings)
-      when is_atom(backend) and is_binary(domain) and is_binary(msgid) and is_binary(msgid_plural) and
-             is_integer(n) and n >= 0 and is_map(bindings) do
-    locale = get_locale(backend)
-    result = backend.lngettext(locale, domain, msgid, msgid_plural, n, bindings)
-    handle_backend_result(result, backend, locale, domain, msgid)
-  end
+  Works exactly like:
+
+      Gettext.dpngettext(backend, "default", context, msgid, msgid_plural, n, bindings)
+
+  """
+  @spec pngettext(module, binary, binary, binary, non_neg_integer, bindings) :: binary
+  def pngettext(backend, msgctxt, msgid, msgid_plural, n, bindings),
+    do: dpngettext(backend, "default", msgctxt, msgid, msgid_plural, n, bindings)
 
   @doc """
   Returns the pluralized translation of the given string in the `"default"`
@@ -762,9 +952,9 @@ defmodule Gettext do
       MyApp.Gettext.gettext("Hello world")
       #=> "Bonjour monde"
 
-      Gettext.with_locale "it", fn ->
+      Gettext.with_locale("it", fn ->
         MyApp.Gettext.gettext("Hello world")
-      end
+      end)
       #=> "Ciao mondo"
 
       MyApp.Gettext.gettext("Hello world")
@@ -788,7 +978,7 @@ defmodule Gettext do
   end
 
   @doc """
-  Runs `fun` with the gettext locale set to `locale` for the given `backend`.
+  Runs `fun` with the Gettext locale set to `locale` for the given `backend`.
 
   This function just sets the Gettext locale for `backend` to `locale` before
   running `fun` and sets it back to its previous value afterwards. Note that
@@ -805,9 +995,9 @@ defmodule Gettext do
       MyApp.Gettext.gettext("Hello world")
       #=> "Bonjour monde"
 
-      Gettext.with_locale MyApp.Gettext, "it", fn ->
+      Gettext.with_locale(MyApp.Gettext, "it", fn ->
         MyApp.Gettext.gettext("Hello world")
-      end
+      end)
       #=> "Ciao mondo"
 
       MyApp.Gettext.gettext("Hello world")
@@ -862,11 +1052,11 @@ defmodule Gettext do
     backend.__gettext__(:known_locales)
   end
 
-  defp handle_backend_result({:ok, string}, _backend, _locale, _domain, _msgid) do
+  defp handle_backend_result({:ok, string}, _backend, _locale, _domain, _msgctxt, _msgid) do
     string
   end
 
-  defp handle_backend_result({:default, string}, _backend, _locale, _domain, _msgid) do
+  defp handle_backend_result({:default, string}, _backend, _locale, _domain, _msgctxt, _msgid) do
     string
   end
 
@@ -875,12 +1065,14 @@ defmodule Gettext do
          backend,
          locale,
          domain,
+         msgctxt,
          msgid
        ) do
     exception = %MissingBindingsError{
       backend: backend,
       locale: locale,
       domain: domain,
+      msgctxt: msgctxt,
       msgid: msgid,
       missing: missing
     }
@@ -888,7 +1080,7 @@ defmodule Gettext do
     backend.handle_missing_bindings(exception, incomplete)
   end
 
-  defp handle_backend_result({:error, reason}, _backend, _locale, _domain, _msgid) do
+  defp handle_backend_result({:error, reason}, _backend, _locale, _domain, _msgctxt, _msgid) do
     raise Error, reason
   end
 end

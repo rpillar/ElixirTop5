@@ -1,35 +1,50 @@
 defmodule Credo.Check.Warning.UnsafeToAtom do
-  @moduledoc """
-  Creating atoms from unknown or external sources dynamically is a potentially
-  unsafe operation because atoms are not garbage-collected by the runtime.
+  use Credo.Check,
+    base_priority: :high,
+    category: :warning,
+    tags: [:controversial],
+    explanations: [
+      check: """
+      Creating atoms from unknown or external sources dynamically is a potentially
+      unsafe operation because atoms are not garbage-collected by the runtime.
 
-  Creating an atom from a string or charlist should be done by using
+      Creating an atom from a string or charlist should be done by using
 
-      String.to_existing_atom(string)
+          String.to_existing_atom(string)
 
-  or
+      or
 
-      List.to_existing_atom(charlist)
+          List.to_existing_atom(charlist)
 
-  Module aliases should be constructed using
+      Module aliases should be constructed using
 
-      Module.safe_concat(prefix, suffix)
+          Module.safe_concat(prefix, suffix)
 
-  or
+      or
 
-      Module.safe_concat([prefix, infix, suffix])
+          Module.safe_concat([prefix, infix, suffix])
 
-  """
+      Jason.decode/Jason.decode! should be called using `keys: :atoms!` (*not* `keys: :atoms`):
 
-  @explanation [check: @moduledoc]
+          Jason.decode(str, keys: :atoms!)
 
-  use Credo.Check, base_priority: :high, category: :warning
+      or `:keys` should be omitted (which defaults to `:strings`):
+
+          Jason.decode(str)
+
+      """
+    ]
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
     Credo.Code.prewalk(source_file, &traverse(&1, &2, issue_meta))
+  end
+
+  defp traverse({:@, _, _}, issues, _) do
+    {nil, issues}
   end
 
   defp traverse({{:., _loc, call}, meta, args} = ast, issues, issue_meta) do
@@ -68,6 +83,17 @@ defmodule Credo.Check.Warning.UnsafeToAtom do
 
   defp get_forbidden_call([{:__aliases__, _, [:Module]}, :concat], [_, _]) do
     {"Module.concat/2", "Module.safe_concat/2"}
+  end
+
+  defp get_forbidden_call([{:__aliases__, _, [:Jason]}, decode], args)
+       when decode in [:decode, :decode!] do
+    args
+    |> Enum.any?(fn arg -> Keyword.keyword?(arg) and Keyword.get(arg, :keys) == :atoms end)
+    |> if do
+      {"Jason.#{decode}(..., keys: :atoms)", "Jason.#{decode}(..., keys: :atoms!)"}
+    else
+      nil
+    end
   end
 
   defp get_forbidden_call(_, _) do

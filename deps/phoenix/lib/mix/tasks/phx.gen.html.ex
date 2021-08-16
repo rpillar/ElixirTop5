@@ -18,15 +18,19 @@ defmodule Mix.Tasks.Phx.Gen.Html do
   > over distinct contexts (such as `Accounts.User` and `Payments.User`).
 
   The schema is responsible for mapping the database fields into an
-  Elixir struct.
+  Elixir struct. It is followed by an optional list of attributes,
+  with their respective names and types. See `mix phx.gen.schema`
+  for more information on attributes.
 
   Overall, this generator will add the following files to `lib/`:
 
-    * a context module in `lib/app/accounts/accounts.ex` for the accounts API
+    * a context module in `lib/app/accounts.ex` for the accounts API
     * a schema in `lib/app/accounts/user.ex`, with an `users` table
     * a view in `lib/app_web/views/user_view.ex`
     * a controller in `lib/app_web/controllers/user_controller.ex`
     * default CRUD templates in `lib/app_web/templates/user`
+
+  ## The context app
 
   A migration file for the repository and test files for the context and
   controller features will also be generated.
@@ -58,42 +62,16 @@ defmodule Mix.Tasks.Phx.Gen.Html do
   Which would generate a `lib/app_web/controllers/sales/user_controller.ex` and
   `lib/app_web/views/sales/user_view.ex`.
 
-  ## Generating without a schema or context file
+  ## Customising the context, schema, tables and migrations
 
-  In some cases, you may wish to bootstrap HTML templates, controllers, and
-  controller tests, but leave internal implementation of the context or schema
-  to yourself. You can use the `--no-context` and `--no-schema` flags for
-  file generation control.
+  In some cases, you may wish to bootstrap HTML templates, controllers,
+  and controller tests, but leave internal implementation of the context
+  or schema to yourself. You can use the `--no-context` and `--no-schema`
+  flags for file generation control.
 
-  ## table
-
-  By default, the table name for the migration and schema will be
-  the plural name provided for the resource. To customize this value,
-  a `--table` option may be provided. For example:
-
-      mix phx.gen.html Accounts User users --table cms_users
-
-  ## binary_id
-
-  Generated migration can use `binary_id` for schema's primary key
-  and its references with option `--binary-id`.
-
-  ## Default options
-
-  This generator uses default options provided in the `:generators`
-  configuration of your application. These are the defaults:
-
-      config :your_app, :generators,
-        migration: true,
-        binary_id: false,
-        sample_binary_id: "11111111-1111-1111-1111-111111111111"
-
-  You can override those options per invocation by providing corresponding
-  switches, e.g. `--no-binary-id` to use normal ids despite the default
-  configuration or `--migration` to force generation of the migration.
-
-  Read the documentation for `phx.gen.schema` for more information on
-  attributes.
+  You can also change the table name or configure the migrations to
+  use binary ids for primary keys, see `mix phx.gen.schema` for more
+  information.
   """
   use Mix.Task
 
@@ -102,8 +80,8 @@ defmodule Mix.Tasks.Phx.Gen.Html do
 
   @doc false
   def run(args) do
-    if Mix.Project.umbrella? do
-      Mix.raise "mix phx.gen.html can only be run inside an application directory"
+    if Mix.Project.umbrella?() do
+      Mix.raise "mix phx.gen.html must be invoked from within your *_web application root directory"
     end
 
     {context, schema} = Gen.Context.build(args)
@@ -161,7 +139,7 @@ defmodule Mix.Tasks.Phx.Gen.Html do
   @doc false
   def print_shell_instructions(%Context{schema: schema, context_app: ctx_app} = context) do
     if schema.web_namespace do
-      Mix.shell.info """
+      Mix.shell().info """
 
       Add the resource to your #{schema.web_namespace} :browser scope in #{Mix.Phoenix.web_path(ctx_app)}/router.ex:
 
@@ -172,7 +150,7 @@ defmodule Mix.Tasks.Phx.Gen.Html do
           end
       """
     else
-      Mix.shell.info """
+      Mix.shell().info """
 
       Add the resource to your browser scope in #{Mix.Phoenix.web_path(ctx_app)}/router.ex:
 
@@ -182,7 +160,8 @@ defmodule Mix.Tasks.Phx.Gen.Html do
     if context.generate?, do: Gen.Context.print_shell_instructions(context)
   end
 
-  defp inputs(%Schema{} = schema) do
+  @doc false
+  def inputs(%Schema{} = schema) do
     Enum.map(schema.attrs, fn
       {_, {:references, _}} ->
         {nil, nil, nil}

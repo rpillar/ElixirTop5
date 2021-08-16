@@ -28,13 +28,8 @@ defmodule Ecto do
 
   If you want to quickly check a sample application using Ecto, please check
   the [getting started guide](http://hexdocs.pm/ecto/getting-started.html) and
-  the accompanying sample application.
-
-  After exploring the documentation and guides, consider checking out the
-  ["What's new in Ecto 2.1"](http://pages.plataformatec.com.br/ebook-whats-new-in-ecto-2-0)
-  free ebook to learn more about many features in Ecto 2.1 such as `many_to_many`,
-  schemaless queries, concurrent testing and more. Note the book still applies
-  to Ecto 3.0 as a whole, as the new features in Ecto 2.1 still exist in Ecto 3.0.
+  the accompanying sample application. [Ecto's README](https://github.com/elixir-ecto/ecto)
+  also links to other resources.
 
   In the following sections, we will provide an overview of those components and
   how they interact with each other. Feel free to access their respective module
@@ -428,8 +423,8 @@ defmodule Ecto do
   ## Examples
 
   If the relationship is a `has_one` or `has_many` and
-  the key is set in the given struct, the key will automatically
-  be set in the built association:
+  the primary key is set in the parent struct, the key will
+  automatically be set in the built association:
 
       iex> post = Repo.get(Post, 13)
       %Post{id: 13}
@@ -457,6 +452,16 @@ defmodule Ecto do
 
       iex> build_assoc(post, :comments, post_id: 1)
       %Comment{id: nil, post_id: 13}
+
+  The given attributes are expected to be structured data.
+  If you want to build an association with external data,
+  such as a request parameters, you can use `Ecto.Changeset.cast/3`
+  after `build_assoc/3`:
+
+      parent
+      |> Ecto.build_assoc(:child)
+      |> Ecto.Changeset.cast(params, [:field1, :field2])
+
   """
   def build_assoc(%{__struct__: schema} = struct, assoc, attributes \\ %{}) do
     assoc = Ecto.Association.association_from_schema!(schema, assoc)
@@ -500,8 +505,7 @@ defmodule Ecto do
     end
 
     schema = hd(structs).__struct__
-    assoc = %{owner_key: owner_key} =
-      Ecto.Association.association_from_schema!(schema, assoc)
+    refl = %{owner_key: owner_key} = Ecto.Association.association_from_schema!(schema, assoc)
 
     values =
       Enum.uniq for(struct <- structs,
@@ -509,7 +513,14 @@ defmodule Ecto do
         key = Map.fetch!(struct, owner_key),
         do: key)
 
-    Ecto.Association.assoc_query(assoc, assocs, nil, values)
+    case assocs do
+      [] ->
+        %module{} = refl
+        module.assoc_query(refl, nil, values)
+
+      assocs ->
+        Ecto.Association.filter_through_chain(schema, [assoc | assocs], values)
+    end
   end
 
   @doc """
@@ -605,5 +616,55 @@ defmodule Ecto do
     else
       true
     end
+  end
+
+  @doc """
+  Loads previously dumped `data` in the given `format` into a schema.
+
+  The first argument can be a an embedded schema module, or a map (of types) and
+  determines the return value: a struct or a map, respectively.
+
+  The second argument `data` specifies fields and values that are to be loaded.
+  It can be a map, a keyword list, or a `{fields, values}` tuple. Fields can be
+  atoms or strings.
+
+  The third argument `format` is the format the data has been dumped as. For
+  example, databases may dump embedded to `:json`, this function allows such
+  dumped data to be put back into the schemas.
+
+  Fields that are not present in the schema (or `types` map) are ignored.
+  If any of the values has invalid type, an error is raised.
+
+  Note that if you want to load data into a non-embedded schema that was
+  directly persisted into a given repository, then use `c:Ecto.Repo.load/2`.
+
+  ## Examples
+
+      iex> result = Ecto.Adapters.SQL.query!(MyRepo, "SELECT users.settings FROM users", [])
+      iex> Enum.map(result.rows, fn [settings] -> Ecto.embedded_load(Setting, Jason.decode!(settings), :json) end)
+      [%Setting{...}, ...]
+  """
+  @spec embedded_load(
+              module_or_map :: module | map(),
+              data :: map(),
+              format :: atom()
+            ) :: Ecto.Schema.t() | map()
+  def embedded_load(schema_or_types, data, format) do
+    Ecto.Schema.Loader.unsafe_load(schema_or_types, data, &Ecto.Type.embedded_load(&1, &2, format))
+  end
+
+  @doc """
+  Dumps the given struct defined by an embedded schema.
+
+  This converts the given embedded schema to a map to be serialized
+  with the given format. For example:
+
+      iex> Ecto.embedded_dump(%Post{}, :json)
+      %{title: "hello"}
+
+  """
+  @spec embedded_dump(Ecto.Schema.t(), format :: atom()) :: map()
+  def embedded_dump(%schema{} = data, format) do
+    Ecto.Schema.Loader.safe_dump(data, schema.__schema__(:dump), &Ecto.Type.embedded_dump(&1, &2, format))
   end
 end

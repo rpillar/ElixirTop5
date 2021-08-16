@@ -2,11 +2,23 @@ defmodule Postgrex do
   @moduledoc """
   PostgreSQL driver for Elixir.
 
-  This module handles the connection to Postgres, providing support
+  Postgrex is a partial implementation of the Postgres [frontend/backend
+  message protocol](https://www.postgresql.org/docs/current/protocol.html).
+  It performs wire messaging in Elixir, as opposed to binding to a library
+  such as `libpq` in C.
+
+  A Postgrex query is performed as "[extended query](https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY)".
+  An "extended query"  involves separate server-side parse, bind, and execute
+  stages, each of which may be re-used for efficiency. For example, libraries
+  like Ecto caches queries, so a query only has to be parsed and planned once.
+  This is all done via wire messaging, without relying on `PREPARE q AS (...)`
+  and `EXECUTE q()` SQL statements directly.
+
+  This module handles the connection to PostgreSQL, providing support
   for queries, transactions, connection backoff, logging, pooling and
   more.
 
-  Note that the notifications API (pub/sub) supported by Postgres is
+  Note that the notifications API (pub/sub) supported by PostgreSQL is
   handled by `Postgrex.Notifications`. Hence, to use this feature,
   you need to start a separate (notifications) connection.
   """
@@ -19,32 +31,33 @@ defmodule Postgrex do
   A connection reference is used when making multiple requests to the same
   connection, see `transaction/3`.
   """
-  @type conn :: DBConnection.conn
+  @type conn :: DBConnection.conn()
 
   @type start_option ::
-          {:hostname, String.t}
-          | {:socket_dir, Path.t}
-          | {:socket, Path.t}
-          | {:port, :inet.port_number}
-          | {:database, String.t}
-          | {:username, String.t}
-          | {:password, String.t}
+          {:hostname, String.t()}
+          | {:endpoints, [tuple()]}
+          | {:socket_dir, Path.t()}
+          | {:socket, Path.t()}
+          | {:port, :inet.port_number()}
+          | {:database, String.t()}
+          | {:username, String.t()}
+          | {:password, String.t()}
           | {:parameters, keyword}
           | {:timeout, timeout}
           | {:connect_timeout, timeout}
           | {:handshake_timeout, timeout}
           | {:ssl, boolean}
-          | {:ssl_opts, [:ssl.ssl_option]}
-          | {:socket_options, [:gen_tcp.connect_option]}
+          | {:ssl_opts, [:ssl.tls_client_option()]}
+          | {:socket_options, [:gen_tcp.connect_option()]}
           | {:prepare, :named | :unnamed}
           | {:transactions, :strict | :naive}
           | {:types, module}
           | {:disconnect_on_error_codes, [atom]}
-          | DBConnection.start_option
+          | DBConnection.start_option()
 
   @type option ::
           {:mode, :transaction | :savepoint}
-          | DBConnection.option
+          | DBConnection.option()
 
   @type execute_option ::
           {:decode_mapper, (list -> term)}
@@ -60,14 +73,24 @@ defmodule Postgrex do
 
   ## Options
 
+  Postgrex provides multiple ways to connect to the server, listed in order of
+  precedence below:
+
     * `:hostname` - Server hostname (default: PGHOST env variable, then localhost);
-    * `:socket_dir` - Connect to Postgres via UNIX sockets in the given directory;
+    * `:port` - Server port (default: PGPORT env variable, then 5432);
+    * `:endpoints` - A list of endpoints (host and port pairs); Postgrex will try
+      each endpoint in order, one by one, until the connection succeeds; The syntax
+      is `[{host1,port1},{host2,port2},{host3,port3}]`; This option takes precedence
+      over `:hostname+:port`;
+    * `:socket_dir` - Connect to PostgreSQL via UNIX sockets in the given directory;
       The socket name is derived based on the port. This is the preferred method
       for configuring sockets and it takes precedence over the hostname. If you are
-      connecting to a socket outside of the Postgres convention, use `:socket` instead;
-    * `:socket` - Connect to Postgres via UNIX sockets in the given path.
-      This option takes precedence over the `:hostname` and `:socket_dir`;
-    * `:port` - Server port (default: PGPORT env variable, then 5432);
+      connecting to a socket outside of the PostgreSQL convention, use `:socket` instead;
+    * `:socket` - Connect to PostgreSQL via UNIX sockets in the given path.
+      This option takes precedence over the `:hostname`, `:endpoints` and `:socket_dir`;
+
+  Once a server is specified, you can configure the connection with the following:
+
     * `:database` - Database (default: PGDATABASE env variable; otherwise required);
     * `:username` - Username (default: PGUSER env variable, then USER env var);
     * `:password` - User password (default: PGPASSWORD env variable);
@@ -79,9 +102,28 @@ defmodule Postgrex do
     * `:handshake_timeout` - Connection handshake timeout in milliseconds
       (defaults to `:timeout` value);
     * `:ssl` - Set to `true` if ssl should be used (default: `false`);
-    * `:ssl_opts` - A list of ssl options, see ssl docs;
+    * `:ssl_opts` - A list of ssl options, see the
+      [`tls_client_option`](http://erlang.org/doc/man/ssl.html#type-tls_client_option)
+      from the ssl docs;
     * `:socket_options` - Options to be given to the underlying socket
       (applies to both TCP and UNIX sockets);
+    * `:idle_interval` - Ping connections after a period of inactivity in milliseconds.
+      Defaults to 1000ms;
+    * `:target_server_type` - Allows opening connections to a server in the given
+      replica mode. The allowed values are `:any`, `:primary` and `:secondary`
+      (default: `:any`). If this option is used together with `endpoints`, we will
+      traverse all endpoints until we find an endpoint matching the server type;
+    * `:disconnect_on_error_codes` - List of error code atoms that when encountered
+      will disconnect the connection. This is useful when using Postgrex against systems that
+      support failover, which when it occurs will emit certain error codes
+      e.g. `:read_only_sql_transaction` (default: `[]`);
+    * `:show_sensitive_data_on_connection_error` - By default, `Postgrex`
+      hides all information during connection errors to avoid leaking credentials
+      or other sensitive information. You can set this option if you wish to
+      see complete errors and stacktraces during connection errors;
+
+  The following options controls the pool and other Postgrex features:
+
     * `:prepare` - How to prepare queries, either `:named` to use named queries
     or `:unnamed` to force unnamed queries (default: `:named`);
     * `:transactions` - Set to `:strict` to error on unexpected transaction
@@ -93,14 +135,6 @@ defmodule Postgrex do
     * `:types` - The types module to use, see `Postgrex.TypeModule`, this
       option is only required when using custom encoding or decoding (default:
       `Postgrex.DefaultTypes`);
-    * `:disconnect_on_error_codes` - List of error code atoms that when encountered
-      will disconnect the connection. This is useful when using Postgrex against systems that
-      support failover, which when it occurs will emit certain error codes
-      e.g. `:read_only_sql_transaction` (default: `[]`);
-    * `:show_sensitive_data_on_connection_error` - By default, `Postgrex`
-      hides all information during connection errors to avoid leaking credentials
-      or other sensitive information. You can set this option if you wish to
-      see complete errors and stacktraces during connection errors
 
   `Postgrex` uses the `DBConnection` library and supports all `DBConnection`
   options like `:idle`, `:after_connect` etc. See `DBConnection.start_link/2`
@@ -120,6 +154,21 @@ defmodule Postgrex do
 
       iex> {:ok, pid} = Postgrex.start_link(socket_dir: "/tmp", database: "postgres")
       {:ok, #PID<0.69.0>}
+      
+  ## SSL client authentication 
+
+  When connecting to CockroachDB instances running in secure mode it is idiomatic to use 
+  client SSL certificate authentication. 
+
+  An example of Repository configuration:
+
+      config :app, App.Repo,
+        ssl: String.to_existing_atom(System.get_env("DB_SSL_ENABLED", "true")),
+        ssl_opts: [
+          verify: :verify_peer,
+          cacertfile: System.get_env("DB_CA_CERT_FILE"),
+          verify_fun: &:ssl_verify_hostname.verify_fun/3
+        ]  
 
   ## PgBouncer
 
@@ -131,24 +180,43 @@ defmodule Postgrex do
 
   ## Handling failover
 
-  Some services, such as AWS Aurora, support failovers. This means the
-  database you are currently connected to may suddenly become read-only,
-  and an attempt to do any write operation, such as INSERT/UPDATE/DELETE
-  will lead to errors such as:
+  Some services, such as AWS Aurora, support failovers. The 2 options
+  `endpoints` and `target_server_type` can be used together to achieve a faster fail-over.
 
-      11:11:03.089 [error] Postgrex.Protocol (#PID<0.189.0>) disconnected:
-      ** (Postgrex.Error) ERROR 25006 (read_only_sql_transaction)
-      cannot execute INSERT in a read-only transaction
+  Imagine an AWS Aurora cluster named "test" with 2 instances. Use the
+  following options minimize downtime by ensuring that Postgrex connects to
+  the new primary instance as soon as possible.
 
-  Luckily, you can instruct `Postgrex` to disconnect in such cases by
-  using the following configuration:
+      {:ok, pid} = Postgrex.start_link(
+        endpoints: [
+          {"test.cluster-xyz.eu-west-1.rds.amazonaws.com", 5432},
+          {"test.cluster-ro-xyz.eu-west-1.rds.amazonaws.com", 5432}
+        ],
+        target_server_type: :primary,
+        (...)
+      )
 
-      disconnect_on_error_codes: [:read_only_sql_transaction]
+  In the event of a fail-over, Postgrex gets first disconnected from what used
+  to be the primary instance. The primary instance will then reboot and turn into
+  a secondary instance. Meanwhile, one of the secondary instances will have turned
+  into the new primary instance. However, the DNS entry of the primary endpoint
+  provided by AWS can take some time to get updated. That is why it can be faster to
+  let Postgrex iterate over all the instances of the cluster to find the new
+  primary instance instead of waiting for the DNS update.
 
-  This cause the connection process to attempt to reconnect according
-  to the backoff configuration.
+  If the cluster does not have DNS-backed primary and secondary endpoints (like the
+  ones provided by AWS Aurora) or if the cluster is made of more than 2 instances,
+  the hostname (and port) of all of the individual instances can be specified
+  in the `endpoints` list:
+
+      endpoints: [
+        {"test-instance-1.xyz.eu-west-1.rds.amazonaws.com", 5432},
+        {"test-instance-2.xyz.eu-west-1.rds.amazonaws.com", 5432},
+        (...),
+        {"test-instance-N.xyz.eu-west-1.rds.amazonaws.com", 5432}
+      ]
   """
-  @spec start_link([start_option]) :: {:ok, pid} | {:error, Postgrex.Error.t | term}
+  @spec start_link([start_option]) :: {:ok, pid} | {:error, Postgrex.Error.t() | term}
   def start_link(opts) do
     ensure_deps_started!(opts)
     opts = Postgrex.Utils.default_opts(opts)
@@ -175,6 +243,7 @@ defmodule Postgrex do
     decoding, (default: `fn x -> x end`);
     * `:mode` - set to `:savepoint` to use a savepoint to rollback to before the
     query on error, otherwise set to `:transaction` (default: `:transaction`);
+    * `:cache_statement` - Caches the query with the given name
 
   ## Examples
 
@@ -188,7 +257,8 @@ defmodule Postgrex do
 
       Postgrex.query(conn, "COPY posts TO STDOUT", [])
   """
-  @spec query(conn, iodata, list, [execute_option]) :: {:ok, Postgrex.Result.t} | {:error, Exception.t}
+  @spec query(conn, iodata, list, [execute_option]) ::
+          {:ok, Postgrex.Result.t()} | {:error, Exception.t()}
   def query(conn, statement, params, opts \\ []) do
     if name = Keyword.get(opts, :cache_statement) do
       query = %Query{name: name, cache: :statement, statement: IO.iodata_to_binary(statement)}
@@ -197,7 +267,7 @@ defmodule Postgrex do
         {:ok, _, result} ->
           {:ok, result}
 
-        {:error, %Postgrex.Error{postgres: %{code: :feature_not_supported}}} = error->
+        {:error, %Postgrex.Error{postgres: %{code: :feature_not_supported}}} = error ->
           with %DBConnection{} <- conn,
                :error <- DBConnection.status(conn) do
             error
@@ -224,7 +294,7 @@ defmodule Postgrex do
   Runs an (extended) query and returns the result or raises `Postgrex.Error` if
   there was an error. See `query/3`.
   """
-  @spec query!(conn, iodata, list, [execute_option]) :: Postgrex.Result.t
+  @spec query!(conn, iodata, list, [execute_option]) :: Postgrex.Result.t()
   def query!(conn, statement, params, opts \\ []) do
     case query(conn, statement, params, opts) do
       {:ok, result} -> result
@@ -254,7 +324,8 @@ defmodule Postgrex do
 
       Postgrex.prepare(conn, "", "CREATE TABLE posts (id serial, title text)")
   """
-  @spec prepare(conn, iodata, iodata, [option]) :: {:ok, Postgrex.Query.t} | {:error, Exception.t}
+  @spec prepare(conn, iodata, iodata, [option]) ::
+          {:ok, Postgrex.Query.t()} | {:error, Exception.t()}
   def prepare(conn, name, statement, opts \\ []) do
     query = %Query{name: name, statement: statement}
     opts = Keyword.put(opts, :postgrex_prepare, true)
@@ -265,7 +336,7 @@ defmodule Postgrex do
   Prepares an (extended) query and returns the prepared query or raises
   `Postgrex.Error` if there was an error. See `prepare/4`.
   """
-  @spec prepare!(conn, iodata, iodata, [option]) :: Postgrex.Query.t
+  @spec prepare!(conn, iodata, iodata, [option]) :: Postgrex.Query.t()
   def prepare!(conn, name, statement, opts \\ []) do
     opts = Keyword.put(opts, :postgrex_prepare, true)
     DBConnection.prepare!(conn, %Query{name: name, statement: statement}, opts)
@@ -293,11 +364,11 @@ defmodule Postgrex do
 
   ## Examples
 
-      Postgrex.prepare_and_execute(conn, "", "SELECT id FROM posts WHERE title like $1", ["%my%"])
+      Postgrex.prepare_execute(conn, "", "SELECT id FROM posts WHERE title like $1", ["%my%"])
 
   """
   @spec prepare_execute(conn, iodata, iodata, list, [execute_option]) ::
-    {:ok, Postgrex.Query.t, Postgrex.Result.t} | {:error, Postgrex.Error.t}
+          {:ok, Postgrex.Query.t(), Postgrex.Result.t()} | {:error, Postgrex.Error.t()}
   def prepare_execute(conn, name, statement, params, opts \\ []) do
     query = %Query{name: name, statement: statement}
     DBConnection.prepare_execute(conn, query, params, opts)
@@ -308,7 +379,7 @@ defmodule Postgrex do
   `Postgrex.Error` if there was an error. See `prepare_execute/5`.
   """
   @spec prepare_execute!(conn, iodata, iodata, list, [execute_option]) ::
-    {Postgrex.Query.t, Postgrex.Result.t}
+          {Postgrex.Query.t(), Postgrex.Result.t()}
   def prepare_execute!(conn, name, statement, params, opts \\ []) do
     query = %Query{name: name, statement: statement}
     DBConnection.prepare_execute!(conn, query, params, opts)
@@ -342,8 +413,8 @@ defmodule Postgrex do
       query = Postgrex.prepare!(conn, "", "SELECT id FROM posts WHERE title like $1")
       Postgrex.execute(conn, query, ["%my%"])
   """
-  @spec execute(conn, Postgrex.Query.t, list, [execute_option]) ::
-    {:ok, Postgrex.Query.t, Postgrex.Result.t} | {:error, Postgrex.Error.t}
+  @spec execute(conn, Postgrex.Query.t(), list, [execute_option]) ::
+          {:ok, Postgrex.Query.t(), Postgrex.Result.t()} | {:error, Postgrex.Error.t()}
   def execute(conn, query, params, opts \\ []) do
     DBConnection.execute(conn, query, params, opts)
   end
@@ -352,8 +423,8 @@ defmodule Postgrex do
   Runs an (extended) prepared query and returns the result or raises
   `Postgrex.Error` if there was an error. See `execute/4`.
   """
-  @spec execute!(conn, Postgrex.Query.t, list, [execute_option]) ::
-    Postgrex.Result.t
+  @spec execute!(conn, Postgrex.Query.t(), list, [execute_option]) ::
+          Postgrex.Result.t()
   def execute!(conn, query, params, opts \\ []) do
     DBConnection.execute!(conn, query, params, opts)
   end
@@ -380,13 +451,10 @@ defmodule Postgrex do
       query = Postgrex.prepare!(conn, "", "CREATE TABLE posts (id serial, title text)")
       Postgrex.close(conn, query)
   """
-  @spec close(conn, Postgrex.Query.t, [option]) :: :ok | {:error, Exception.t}
+  @spec close(conn, Postgrex.Query.t(), [option]) :: :ok | {:error, Exception.t()}
   def close(conn, query, opts \\ []) do
-    case DBConnection.close(conn, query, opts) do
-      {:ok, _} ->
-        :ok
-      {:error, _} = error ->
-        error
+    with {:ok, _} <- DBConnection.close(conn, query, opts) do
+      :ok
     end
   end
 
@@ -394,9 +462,10 @@ defmodule Postgrex do
   Closes an (extended) prepared query and returns `:ok` or raises
   `Postgrex.Error` if there was an error. See `close/3`.
   """
-  @spec close!(conn, Postgrex.Query.t, [option]) :: :ok
+  @spec close!(conn, Postgrex.Query.t(), [option]) :: :ok
   def close!(conn, query, opts \\ []) do
     DBConnection.close!(conn, query, opts)
+    :ok
   end
 
   @doc """
@@ -434,8 +503,9 @@ defmodule Postgrex do
         Postgrex.query!(conn, "SELECT title FROM posts", [])
       end)
   """
-  @spec transaction(conn, ((DBConnection.t) -> result), [option]) ::
-    {:ok, result} | {:error, any} when result: var
+  @spec transaction(conn, (DBConnection.t() -> result), [option]) ::
+          {:ok, result} | {:error, any}
+        when result: var
   def transaction(conn, fun, opts \\ []) do
     DBConnection.transaction(conn, fun, opts)
   end
@@ -453,7 +523,7 @@ defmodule Postgrex do
         IO.puts "never reaches here!"
       end)
   """
-  @spec rollback(DBConnection.t, reason :: any) :: no_return()
+  @spec rollback(DBConnection.t(), reason :: any) :: no_return()
   defdelegate rollback(conn, reason), to: DBConnection
 
   @doc """
@@ -473,8 +543,9 @@ defmodule Postgrex do
   @doc """
   Returns a supervisor child specification for a DBConnection pool.
   """
-  @spec child_spec([start_option]) :: Supervisor.Spec.spec
+  @spec child_spec([start_option]) :: :supervisor.child_spec()
   def child_spec(opts) do
+    ensure_deps_started!(opts)
     opts = Postgrex.Utils.default_opts(opts)
     DBConnection.child_spec(Postgrex.Protocol, opts)
   end
@@ -519,9 +590,10 @@ defmodule Postgrex do
         Enum.into(File.stream!("posts"), stream)
       end)
   """
-  @spec stream(DBConnection.t, iodata | Postgrex.Query.t, list, [option]) :: Postgrex.Stream.t
+  @spec stream(DBConnection.t(), iodata | Postgrex.Query.t(), list, [option]) ::
+          Postgrex.Stream.t()
         when option: execute_option | {:max_rows, pos_integer}
-  def stream(%DBConnection{} = conn, query, params, options \\ [])  do
+  def stream(%DBConnection{} = conn, query, params, options \\ []) do
     options = Keyword.put_new(options, :max_rows, @max_rows)
     %Postgrex.Stream{conn: conn, query: query, params: params, options: options}
   end
@@ -529,10 +601,11 @@ defmodule Postgrex do
   ## Helpers
 
   defp ensure_deps_started!(opts) do
-    if Keyword.get(opts, :ssl, false) and not List.keymember?(:application.which_applications(), :ssl, 0) do
+    if Keyword.get(opts, :ssl, false) and
+         not List.keymember?(:application.which_applications(), :ssl, 0) do
       raise """
       SSL connection can not be established because `:ssl` application is not started,
-      you can add it to `extra_application` in your `mix.exs`:
+      you can add it to `extra_applications` in your `mix.exs`:
 
         def application do
           [extra_applications: [:ssl]]

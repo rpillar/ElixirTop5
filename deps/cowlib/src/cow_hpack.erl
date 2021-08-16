@@ -17,6 +17,7 @@
 %% should never be indexed is currently lost.
 
 -module(cow_hpack).
+-dialyzer(no_improper_lists).
 
 -export([init/0]).
 -export([init/1]).
@@ -24,7 +25,6 @@
 
 -export([decode/1]).
 -export([decode/2]).
--export([decode/3]).
 
 -export([encode/1]).
 -export([encode/2]).
@@ -78,87 +78,107 @@ set_max_size(MaxSize, State) ->
 
 -spec decode(binary()) -> {cow_http:headers(), state()}.
 decode(Data) ->
-	decode(Data, init(), #{}).
+	decode(Data, init()).
 
 -spec decode(binary(), State) -> {cow_http:headers(), State} when State::state().
-decode(Data, State) ->
-	decode(Data, State, #{}).
-
--spec decode(binary(), State, opts()) -> {cow_http:headers(), State} when State::state().
 %% Dynamic table size update is only allowed at the beginning of a HEADERS block.
-decode(<< 0:2, 1:1, Rest/bits >>, State=#state{configured_max_size=ConfigMaxSize}, Opts) ->
+decode(<< 0:2, 1:1, Rest/bits >>, State=#state{configured_max_size=ConfigMaxSize}) ->
 	{MaxSize, Rest2} = dec_int5(Rest),
 	if
 		MaxSize =< ConfigMaxSize ->
 			State2 = table_update_size(MaxSize, State),
-			decode(Rest2, State2, Opts)
+			decode(Rest2, State2)
 	end;
-decode(Data, State, Opts) ->
-	decode(Data, State, Opts, []).
+decode(Data, State) ->
+	decode(Data, State, []).
 
-decode(<<>>, State, _, Acc) ->
+decode(<<>>, State, Acc) ->
 	{lists:reverse(Acc), State};
 %% Indexed header field representation.
-decode(<< 1:1, Rest/bits >>, State, Opts, Acc) ->
-	dec_indexed(Rest, State, Opts, Acc);
+decode(<< 1:1, Rest/bits >>, State, Acc) ->
+	dec_indexed(Rest, State, Acc);
 %% Literal header field with incremental indexing: new name.
-decode(<< 0:1, 1:1, 0:6, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_index_new_name(Rest, State, Opts, Acc);
+decode(<< 0:1, 1:1, 0:6, Rest/bits >>, State, Acc) ->
+	dec_lit_index_new_name(Rest, State, Acc);
 %% Literal header field with incremental indexing: indexed name.
-decode(<< 0:1, 1:1, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_index_indexed_name(Rest, State, Opts, Acc);
+decode(<< 0:1, 1:1, Rest/bits >>, State, Acc) ->
+	dec_lit_index_indexed_name(Rest, State, Acc);
 %% Literal header field without indexing: new name.
-decode(<< 0:8, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_no_index_new_name(Rest, State, Opts, Acc);
+decode(<< 0:8, Rest/bits >>, State, Acc) ->
+	dec_lit_no_index_new_name(Rest, State, Acc);
 %% Literal header field without indexing: indexed name.
-decode(<< 0:4, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_no_index_indexed_name(Rest, State, Opts, Acc);
+decode(<< 0:4, Rest/bits >>, State, Acc) ->
+	dec_lit_no_index_indexed_name(Rest, State, Acc);
 %% Literal header field never indexed: new name.
 %% @todo Keep track of "never indexed" headers.
-decode(<< 0:3, 1:1, 0:4, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_no_index_new_name(Rest, State, Opts, Acc);
+decode(<< 0:3, 1:1, 0:4, Rest/bits >>, State, Acc) ->
+	dec_lit_no_index_new_name(Rest, State, Acc);
 %% Literal header field never indexed: indexed name.
 %% @todo Keep track of "never indexed" headers.
-decode(<< 0:3, 1:1, Rest/bits >>, State, Opts, Acc) ->
-	dec_lit_no_index_indexed_name(Rest, State, Opts, Acc).
+decode(<< 0:3, 1:1, Rest/bits >>, State, Acc) ->
+	dec_lit_no_index_indexed_name(Rest, State, Acc).
 
 %% Indexed header field representation.
 
-dec_indexed(Rest, State, Opts, Acc) ->
-	{Index, Rest2} = dec_int7(Rest),
+%% We do the integer decoding inline where appropriate, falling
+%% back to dec_big_int for larger values.
+dec_indexed(<<2#1111111:7, 0:1, Int:7, Rest/bits>>, State, Acc) ->
+	{Name, Value} = table_get(127 + Int, State),
+	decode(Rest, State, [{Name, Value}|Acc]);
+dec_indexed(<<2#1111111:7, Rest0/bits>>, State, Acc) ->
+	{Index, Rest} = dec_big_int(Rest0, 127, 0),
 	{Name, Value} = table_get(Index, State),
-	decode(Rest2, State, Opts, [{Name, Value}|Acc]).
+	decode(Rest, State, [{Name, Value}|Acc]);
+dec_indexed(<<Index:7, Rest/bits>>, State, Acc) ->
+	{Name, Value} = table_get(Index, State),
+	decode(Rest, State, [{Name, Value}|Acc]).
 
 %% Literal header field with incremental indexing.
 
-dec_lit_index_new_name(Rest, State, Opts, Acc) ->
+dec_lit_index_new_name(Rest, State, Acc) ->
 	{Name, Rest2} = dec_str(Rest),
-	dec_lit_index(Rest2, State, Opts, Acc, Name).
+	dec_lit_index(Rest2, State, Acc, Name).
 
-dec_lit_index_indexed_name(Rest, State, Opts, Acc) ->
-	{Index, Rest2} = dec_int6(Rest),
+%% We do the integer decoding inline where appropriate, falling
+%% back to dec_big_int for larger values.
+dec_lit_index_indexed_name(<<2#111111:6, 0:1, Int:7, Rest/bits>>, State, Acc) ->
+	Name = table_get_name(63 + Int, State),
+	dec_lit_index(Rest, State, Acc, Name);
+dec_lit_index_indexed_name(<<2#111111:6, Rest0/bits>>, State, Acc) ->
+	{Index, Rest} = dec_big_int(Rest0, 63, 0),
 	Name = table_get_name(Index, State),
-	dec_lit_index(Rest2, State, Opts, Acc, Name).
+	dec_lit_index(Rest, State, Acc, Name);
+dec_lit_index_indexed_name(<<Index:6, Rest/bits>>, State, Acc) ->
+	Name = table_get_name(Index, State),
+	dec_lit_index(Rest, State, Acc, Name).
 
-dec_lit_index(Rest, State, Opts, Acc, Name) ->
+dec_lit_index(Rest, State, Acc, Name) ->
 	{Value, Rest2} = dec_str(Rest),
 	State2 = table_insert({Name, Value}, State),
-	decode(Rest2, State2, Opts, [{Name, Value}|Acc]).
+	decode(Rest2, State2, [{Name, Value}|Acc]).
 
 %% Literal header field without indexing.
 
-dec_lit_no_index_new_name(Rest, State, Opts, Acc) ->
+dec_lit_no_index_new_name(Rest, State, Acc) ->
 	{Name, Rest2} = dec_str(Rest),
-	dec_lit_no_index(Rest2, State, Opts, Acc, Name).
+	dec_lit_no_index(Rest2, State, Acc, Name).
 
-dec_lit_no_index_indexed_name(Rest, State, Opts, Acc) ->
-	{Index, Rest2} = dec_int4(Rest),
+%% We do the integer decoding inline where appropriate, falling
+%% back to dec_big_int for larger values.
+dec_lit_no_index_indexed_name(<<2#1111:4, 0:1, Int:7, Rest/bits>>, State, Acc) ->
+	Name = table_get_name(15 + Int, State),
+	dec_lit_no_index(Rest, State, Acc, Name);
+dec_lit_no_index_indexed_name(<<2#1111:4, Rest0/bits>>, State, Acc) ->
+	{Index, Rest} = dec_big_int(Rest0, 15, 0),
 	Name = table_get_name(Index, State),
-	dec_lit_no_index(Rest2, State, Opts, Acc, Name).
+	dec_lit_no_index(Rest, State, Acc, Name);
+dec_lit_no_index_indexed_name(<<Index:4, Rest/bits>>, State, Acc) ->
+	Name = table_get_name(Index, State),
+	dec_lit_no_index(Rest, State, Acc, Name).
 
-dec_lit_no_index(Rest, State, Opts, Acc, Name) ->
+dec_lit_no_index(Rest, State, Acc, Name) ->
 	{Value, Rest2} = dec_str(Rest),
-	decode(Rest2, State, Opts, [{Name, Value}|Acc]).
+	decode(Rest2, State, [{Name, Value}|Acc]).
 
 %% @todo Literal header field never indexed.
 
@@ -168,24 +188,9 @@ dec_lit_no_index(Rest, State, Opts, Acc, Name) ->
 %% and each can be used to create an indefinite length integer if all bits
 %% of the prefix are set to 1.
 
-dec_int4(<< 2#1111:4, Rest/bits >>) ->
-	dec_big_int(Rest, 15, 0);
-dec_int4(<< Int:4, Rest/bits >>) ->
-	{Int, Rest}.
-
 dec_int5(<< 2#11111:5, Rest/bits >>) ->
 	dec_big_int(Rest, 31, 0);
 dec_int5(<< Int:5, Rest/bits >>) ->
-	{Int, Rest}.
-
-dec_int6(<< 2#111111:6, Rest/bits >>) ->
-	dec_big_int(Rest, 63, 0);
-dec_int6(<< Int:6, Rest/bits >>) ->
-	{Int, Rest}.
-
-dec_int7(<< 2#1111111:7, Rest/bits >>) ->
-	dec_big_int(Rest, 127, 0);
-dec_int7(<< Int:7, Rest/bits >>) ->
 	{Int, Rest}.
 
 dec_big_int(<< 0:1, Value:7, Rest/bits >>, Int, M) ->
@@ -195,285 +200,60 @@ dec_big_int(<< 1:1, Value:7, Rest/bits >>, Int, M) ->
 
 %% Decode a string.
 
-dec_str(<< 0:1, Rest/bits >>) ->
-	{Length, Rest2} = dec_int7(Rest),
-	<< Str:Length/binary, Rest3/bits >> = Rest2,
-	{Str, Rest3};
-dec_str(<< 1:1, Rest/bits >>) ->
-	{Length, Rest2} = dec_int7(Rest),
-	dec_huffman(Rest2, Length * 8, <<>>).
+dec_str(<<0:1, 2#1111111:7, Rest0/bits>>) ->
+	{Length, Rest1} = dec_big_int(Rest0, 127, 0),
+	<<Str:Length/binary, Rest/bits>> = Rest1,
+	{Str, Rest};
+dec_str(<<0:1, Length:7, Rest0/bits>>) ->
+	<<Str:Length/binary, Rest/bits>> = Rest0,
+	{Str, Rest};
+dec_str(<<1:1, 2#1111111:7, Rest0/bits>>) ->
+	{Length, Rest} = dec_big_int(Rest0, 127, 0),
+	dec_huffman(Rest, Length, 0, <<>>);
+dec_str(<<1:1, Length:7, Rest/bits>>) ->
+	dec_huffman(Rest, Length, 0, <<>>).
 
-%% HPACK uses a static code table for Huffman encoded strings.
-%% It has been converted into one clause per code in the following function.
+%% We use a lookup table that allows us to benefit from
+%% the binary match context optimization. A more naive
+%% implementation using bit pattern matching cannot reuse
+%% a match context because it wouldn't always match on
+%% byte boundaries.
+%%
+%% See cow_hpack_dec_huffman_lookup.hrl for more details.
 
-%% EOS.
-dec_huffman(Rest, 0, String) -> {String, Rest};
-dec_huffman(<<2#1:1, Rest/bits>>, 1, String) -> {String, Rest};
-dec_huffman(<<2#11:2, Rest/bits>>, 2, String) -> {String, Rest};
-dec_huffman(<<2#111:3, Rest/bits>>, 3, String) -> {String, Rest};
-dec_huffman(<<2#1111:4, Rest/bits>>, 4, String) -> {String, Rest};
-dec_huffman(<<2#11111:5, Rest/bits>>, 5, String) -> {String, Rest};
-dec_huffman(<<2#111111:6, Rest/bits>>, 6, String) -> {String, Rest};
-dec_huffman(<<2#1111111:7, Rest/bits>>, 7, String) -> {String, Rest};
-%% Static code table.
-dec_huffman(<<2#00000:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 48>>);
-dec_huffman(<<2#00001:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 49>>);
-dec_huffman(<<2#00010:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 50>>);
-dec_huffman(<<2#00011:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 97>>);
-dec_huffman(<<2#00100:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 99>>);
-dec_huffman(<<2#00101:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 101>>);
-dec_huffman(<<2#00110:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 105>>);
-dec_huffman(<<2#00111:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 111>>);
-dec_huffman(<<2#01000:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 115>>);
-dec_huffman(<<2#01001:5, R/bits>>, L, A) -> dec_huffman(R, L - 5, <<A/binary, 116>>);
-dec_huffman(<<2#010100:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 32>>);
-dec_huffman(<<2#010101:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 37>>);
-dec_huffman(<<2#010110:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 45>>);
-dec_huffman(<<2#010111:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 46>>);
-dec_huffman(<<2#011000:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 47>>);
-dec_huffman(<<2#011001:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 51>>);
-dec_huffman(<<2#011010:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 52>>);
-dec_huffman(<<2#011011:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 53>>);
-dec_huffman(<<2#011100:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 54>>);
-dec_huffman(<<2#011101:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 55>>);
-dec_huffman(<<2#011110:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 56>>);
-dec_huffman(<<2#011111:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 57>>);
-dec_huffman(<<2#100000:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 61>>);
-dec_huffman(<<2#100001:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 65>>);
-dec_huffman(<<2#100010:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 95>>);
-dec_huffman(<<2#100011:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 98>>);
-dec_huffman(<<2#100100:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 100>>);
-dec_huffman(<<2#100101:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 102>>);
-dec_huffman(<<2#100110:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 103>>);
-dec_huffman(<<2#100111:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 104>>);
-dec_huffman(<<2#101000:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 108>>);
-dec_huffman(<<2#101001:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 109>>);
-dec_huffman(<<2#101010:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 110>>);
-dec_huffman(<<2#101011:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 112>>);
-dec_huffman(<<2#101100:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 114>>);
-dec_huffman(<<2#101101:6, R/bits>>, L, A) -> dec_huffman(R, L - 6, <<A/binary, 117>>);
-dec_huffman(<<2#1011100:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 58>>);
-dec_huffman(<<2#1011101:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 66>>);
-dec_huffman(<<2#1011110:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 67>>);
-dec_huffman(<<2#1011111:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 68>>);
-dec_huffman(<<2#1100000:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 69>>);
-dec_huffman(<<2#1100001:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 70>>);
-dec_huffman(<<2#1100010:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 71>>);
-dec_huffman(<<2#1100011:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 72>>);
-dec_huffman(<<2#1100100:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 73>>);
-dec_huffman(<<2#1100101:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 74>>);
-dec_huffman(<<2#1100110:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 75>>);
-dec_huffman(<<2#1100111:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 76>>);
-dec_huffman(<<2#1101000:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 77>>);
-dec_huffman(<<2#1101001:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 78>>);
-dec_huffman(<<2#1101010:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 79>>);
-dec_huffman(<<2#1101011:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 80>>);
-dec_huffman(<<2#1101100:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 81>>);
-dec_huffman(<<2#1101101:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 82>>);
-dec_huffman(<<2#1101110:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 83>>);
-dec_huffman(<<2#1101111:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 84>>);
-dec_huffman(<<2#1110000:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 85>>);
-dec_huffman(<<2#1110001:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 86>>);
-dec_huffman(<<2#1110010:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 87>>);
-dec_huffman(<<2#1110011:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 89>>);
-dec_huffman(<<2#1110100:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 106>>);
-dec_huffman(<<2#1110101:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 107>>);
-dec_huffman(<<2#1110110:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 113>>);
-dec_huffman(<<2#1110111:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 118>>);
-dec_huffman(<<2#1111000:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 119>>);
-dec_huffman(<<2#1111001:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 120>>);
-dec_huffman(<<2#1111010:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 121>>);
-dec_huffman(<<2#1111011:7, R/bits>>, L, A) -> dec_huffman(R, L - 7, <<A/binary, 122>>);
-dec_huffman(<<2#11111000:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 38>>);
-dec_huffman(<<2#11111001:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 42>>);
-dec_huffman(<<2#11111010:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 44>>);
-dec_huffman(<<2#11111011:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 59>>);
-dec_huffman(<<2#11111100:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 88>>);
-dec_huffman(<<2#11111101:8, R/bits>>, L, A) -> dec_huffman(R, L - 8, <<A/binary, 90>>);
-dec_huffman(<<2#1111111000:10, R/bits>>, L, A) -> dec_huffman(R, L - 10, <<A/binary, 33>>);
-dec_huffman(<<2#1111111001:10, R/bits>>, L, A) -> dec_huffman(R, L - 10, <<A/binary, 34>>);
-dec_huffman(<<2#1111111010:10, R/bits>>, L, A) -> dec_huffman(R, L - 10, <<A/binary, 40>>);
-dec_huffman(<<2#1111111011:10, R/bits>>, L, A) -> dec_huffman(R, L - 10, <<A/binary, 41>>);
-dec_huffman(<<2#1111111100:10, R/bits>>, L, A) -> dec_huffman(R, L - 10, <<A/binary, 63>>);
-dec_huffman(<<2#11111111010:11, R/bits>>, L, A) -> dec_huffman(R, L - 11, <<A/binary, 39>>);
-dec_huffman(<<2#11111111011:11, R/bits>>, L, A) -> dec_huffman(R, L - 11, <<A/binary, 43>>);
-dec_huffman(<<2#11111111100:11, R/bits>>, L, A) -> dec_huffman(R, L - 11, <<A/binary, 124>>);
-dec_huffman(<<2#111111111010:12, R/bits>>, L, A) -> dec_huffman(R, L - 12, <<A/binary, 35>>);
-dec_huffman(<<2#111111111011:12, R/bits>>, L, A) -> dec_huffman(R, L - 12, <<A/binary, 62>>);
-dec_huffman(<<2#1111111111000:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 0>>);
-dec_huffman(<<2#1111111111001:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 36>>);
-dec_huffman(<<2#1111111111010:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 64>>);
-dec_huffman(<<2#1111111111011:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 91>>);
-dec_huffman(<<2#1111111111100:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 93>>);
-dec_huffman(<<2#1111111111101:13, R/bits>>, L, A) -> dec_huffman(R, L - 13, <<A/binary, 126>>);
-dec_huffman(<<2#11111111111100:14, R/bits>>, L, A) -> dec_huffman(R, L - 14, <<A/binary, 94>>);
-dec_huffman(<<2#11111111111101:14, R/bits>>, L, A) -> dec_huffman(R, L - 14, <<A/binary, 125>>);
-dec_huffman(<<2#111111111111100:15, R/bits>>, L, A) -> dec_huffman(R, L - 15, <<A/binary, 60>>);
-dec_huffman(<<2#111111111111101:15, R/bits>>, L, A) -> dec_huffman(R, L - 15, <<A/binary, 96>>);
-dec_huffman(<<2#111111111111110:15, R/bits>>, L, A) -> dec_huffman(R, L - 15, <<A/binary, 123>>);
-dec_huffman(<<2#1111111111111110000:19, R/bits>>, L, A) -> dec_huffman(R, L - 19, <<A/binary, 92>>);
-dec_huffman(<<2#1111111111111110001:19, R/bits>>, L, A) -> dec_huffman(R, L - 19, <<A/binary, 195>>);
-dec_huffman(<<2#1111111111111110010:19, R/bits>>, L, A) -> dec_huffman(R, L - 19, <<A/binary, 208>>);
-dec_huffman(<<2#11111111111111100110:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 128>>);
-dec_huffman(<<2#11111111111111100111:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 130>>);
-dec_huffman(<<2#11111111111111101000:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 131>>);
-dec_huffman(<<2#11111111111111101001:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 162>>);
-dec_huffman(<<2#11111111111111101010:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 184>>);
-dec_huffman(<<2#11111111111111101011:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 194>>);
-dec_huffman(<<2#11111111111111101100:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 224>>);
-dec_huffman(<<2#11111111111111101101:20, R/bits>>, L, A) -> dec_huffman(R, L - 20, <<A/binary, 226>>);
-dec_huffman(<<2#111111111111111011100:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 153>>);
-dec_huffman(<<2#111111111111111011101:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 161>>);
-dec_huffman(<<2#111111111111111011110:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 167>>);
-dec_huffman(<<2#111111111111111011111:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 172>>);
-dec_huffman(<<2#111111111111111100000:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 176>>);
-dec_huffman(<<2#111111111111111100001:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 177>>);
-dec_huffman(<<2#111111111111111100010:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 179>>);
-dec_huffman(<<2#111111111111111100011:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 209>>);
-dec_huffman(<<2#111111111111111100100:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 216>>);
-dec_huffman(<<2#111111111111111100101:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 217>>);
-dec_huffman(<<2#111111111111111100110:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 227>>);
-dec_huffman(<<2#111111111111111100111:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 229>>);
-dec_huffman(<<2#111111111111111101000:21, R/bits>>, L, A) -> dec_huffman(R, L - 21, <<A/binary, 230>>);
-dec_huffman(<<2#1111111111111111010010:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 129>>);
-dec_huffman(<<2#1111111111111111010011:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 132>>);
-dec_huffman(<<2#1111111111111111010100:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 133>>);
-dec_huffman(<<2#1111111111111111010101:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 134>>);
-dec_huffman(<<2#1111111111111111010110:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 136>>);
-dec_huffman(<<2#1111111111111111010111:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 146>>);
-dec_huffman(<<2#1111111111111111011000:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 154>>);
-dec_huffman(<<2#1111111111111111011001:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 156>>);
-dec_huffman(<<2#1111111111111111011010:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 160>>);
-dec_huffman(<<2#1111111111111111011011:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 163>>);
-dec_huffman(<<2#1111111111111111011100:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 164>>);
-dec_huffman(<<2#1111111111111111011101:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 169>>);
-dec_huffman(<<2#1111111111111111011110:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 170>>);
-dec_huffman(<<2#1111111111111111011111:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 173>>);
-dec_huffman(<<2#1111111111111111100000:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 178>>);
-dec_huffman(<<2#1111111111111111100001:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 181>>);
-dec_huffman(<<2#1111111111111111100010:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 185>>);
-dec_huffman(<<2#1111111111111111100011:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 186>>);
-dec_huffman(<<2#1111111111111111100100:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 187>>);
-dec_huffman(<<2#1111111111111111100101:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 189>>);
-dec_huffman(<<2#1111111111111111100110:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 190>>);
-dec_huffman(<<2#1111111111111111100111:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 196>>);
-dec_huffman(<<2#1111111111111111101000:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 198>>);
-dec_huffman(<<2#1111111111111111101001:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 228>>);
-dec_huffman(<<2#1111111111111111101010:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 232>>);
-dec_huffman(<<2#1111111111111111101011:22, R/bits>>, L, A) -> dec_huffman(R, L - 22, <<A/binary, 233>>);
-dec_huffman(<<2#11111111111111111011000:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 1>>);
-dec_huffman(<<2#11111111111111111011001:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 135>>);
-dec_huffman(<<2#11111111111111111011010:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 137>>);
-dec_huffman(<<2#11111111111111111011011:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 138>>);
-dec_huffman(<<2#11111111111111111011100:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 139>>);
-dec_huffman(<<2#11111111111111111011101:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 140>>);
-dec_huffman(<<2#11111111111111111011110:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 141>>);
-dec_huffman(<<2#11111111111111111011111:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 143>>);
-dec_huffman(<<2#11111111111111111100000:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 147>>);
-dec_huffman(<<2#11111111111111111100001:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 149>>);
-dec_huffman(<<2#11111111111111111100010:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 150>>);
-dec_huffman(<<2#11111111111111111100011:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 151>>);
-dec_huffman(<<2#11111111111111111100100:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 152>>);
-dec_huffman(<<2#11111111111111111100101:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 155>>);
-dec_huffman(<<2#11111111111111111100110:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 157>>);
-dec_huffman(<<2#11111111111111111100111:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 158>>);
-dec_huffman(<<2#11111111111111111101000:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 165>>);
-dec_huffman(<<2#11111111111111111101001:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 166>>);
-dec_huffman(<<2#11111111111111111101010:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 168>>);
-dec_huffman(<<2#11111111111111111101011:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 174>>);
-dec_huffman(<<2#11111111111111111101100:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 175>>);
-dec_huffman(<<2#11111111111111111101101:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 180>>);
-dec_huffman(<<2#11111111111111111101110:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 182>>);
-dec_huffman(<<2#11111111111111111101111:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 183>>);
-dec_huffman(<<2#11111111111111111110000:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 188>>);
-dec_huffman(<<2#11111111111111111110001:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 191>>);
-dec_huffman(<<2#11111111111111111110010:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 197>>);
-dec_huffman(<<2#11111111111111111110011:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 231>>);
-dec_huffman(<<2#11111111111111111110100:23, R/bits>>, L, A) -> dec_huffman(R, L - 23, <<A/binary, 239>>);
-dec_huffman(<<2#111111111111111111101010:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 9>>);
-dec_huffman(<<2#111111111111111111101011:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 142>>);
-dec_huffman(<<2#111111111111111111101100:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 144>>);
-dec_huffman(<<2#111111111111111111101101:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 145>>);
-dec_huffman(<<2#111111111111111111101110:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 148>>);
-dec_huffman(<<2#111111111111111111101111:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 159>>);
-dec_huffman(<<2#111111111111111111110000:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 171>>);
-dec_huffman(<<2#111111111111111111110001:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 206>>);
-dec_huffman(<<2#111111111111111111110010:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 215>>);
-dec_huffman(<<2#111111111111111111110011:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 225>>);
-dec_huffman(<<2#111111111111111111110100:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 236>>);
-dec_huffman(<<2#111111111111111111110101:24, R/bits>>, L, A) -> dec_huffman(R, L - 24, <<A/binary, 237>>);
-dec_huffman(<<2#1111111111111111111101100:25, R/bits>>, L, A) -> dec_huffman(R, L - 25, <<A/binary, 199>>);
-dec_huffman(<<2#1111111111111111111101101:25, R/bits>>, L, A) -> dec_huffman(R, L - 25, <<A/binary, 207>>);
-dec_huffman(<<2#1111111111111111111101110:25, R/bits>>, L, A) -> dec_huffman(R, L - 25, <<A/binary, 234>>);
-dec_huffman(<<2#1111111111111111111101111:25, R/bits>>, L, A) -> dec_huffman(R, L - 25, <<A/binary, 235>>);
-dec_huffman(<<2#11111111111111111111100000:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 192>>);
-dec_huffman(<<2#11111111111111111111100001:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 193>>);
-dec_huffman(<<2#11111111111111111111100010:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 200>>);
-dec_huffman(<<2#11111111111111111111100011:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 201>>);
-dec_huffman(<<2#11111111111111111111100100:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 202>>);
-dec_huffman(<<2#11111111111111111111100101:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 205>>);
-dec_huffman(<<2#11111111111111111111100110:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 210>>);
-dec_huffman(<<2#11111111111111111111100111:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 213>>);
-dec_huffman(<<2#11111111111111111111101000:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 218>>);
-dec_huffman(<<2#11111111111111111111101001:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 219>>);
-dec_huffman(<<2#11111111111111111111101010:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 238>>);
-dec_huffman(<<2#11111111111111111111101011:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 240>>);
-dec_huffman(<<2#11111111111111111111101100:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 242>>);
-dec_huffman(<<2#11111111111111111111101101:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 243>>);
-dec_huffman(<<2#11111111111111111111101110:26, R/bits>>, L, A) -> dec_huffman(R, L - 26, <<A/binary, 255>>);
-dec_huffman(<<2#111111111111111111111011110:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 203>>);
-dec_huffman(<<2#111111111111111111111011111:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 204>>);
-dec_huffman(<<2#111111111111111111111100000:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 211>>);
-dec_huffman(<<2#111111111111111111111100001:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 212>>);
-dec_huffman(<<2#111111111111111111111100010:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 214>>);
-dec_huffman(<<2#111111111111111111111100011:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 221>>);
-dec_huffman(<<2#111111111111111111111100100:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 222>>);
-dec_huffman(<<2#111111111111111111111100101:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 223>>);
-dec_huffman(<<2#111111111111111111111100110:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 241>>);
-dec_huffman(<<2#111111111111111111111100111:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 244>>);
-dec_huffman(<<2#111111111111111111111101000:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 245>>);
-dec_huffman(<<2#111111111111111111111101001:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 246>>);
-dec_huffman(<<2#111111111111111111111101010:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 247>>);
-dec_huffman(<<2#111111111111111111111101011:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 248>>);
-dec_huffman(<<2#111111111111111111111101100:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 250>>);
-dec_huffman(<<2#111111111111111111111101101:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 251>>);
-dec_huffman(<<2#111111111111111111111101110:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 252>>);
-dec_huffman(<<2#111111111111111111111101111:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 253>>);
-dec_huffman(<<2#111111111111111111111110000:27, R/bits>>, L, A) -> dec_huffman(R, L - 27, <<A/binary, 254>>);
-dec_huffman(<<2#1111111111111111111111100010:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 2>>);
-dec_huffman(<<2#1111111111111111111111100011:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 3>>);
-dec_huffman(<<2#1111111111111111111111100100:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 4>>);
-dec_huffman(<<2#1111111111111111111111100101:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 5>>);
-dec_huffman(<<2#1111111111111111111111100110:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 6>>);
-dec_huffman(<<2#1111111111111111111111100111:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 7>>);
-dec_huffman(<<2#1111111111111111111111101000:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 8>>);
-dec_huffman(<<2#1111111111111111111111101001:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 11>>);
-dec_huffman(<<2#1111111111111111111111101010:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 12>>);
-dec_huffman(<<2#1111111111111111111111101011:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 14>>);
-dec_huffman(<<2#1111111111111111111111101100:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 15>>);
-dec_huffman(<<2#1111111111111111111111101101:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 16>>);
-dec_huffman(<<2#1111111111111111111111101110:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 17>>);
-dec_huffman(<<2#1111111111111111111111101111:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 18>>);
-dec_huffman(<<2#1111111111111111111111110000:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 19>>);
-dec_huffman(<<2#1111111111111111111111110001:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 20>>);
-dec_huffman(<<2#1111111111111111111111110010:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 21>>);
-dec_huffman(<<2#1111111111111111111111110011:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 23>>);
-dec_huffman(<<2#1111111111111111111111110100:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 24>>);
-dec_huffman(<<2#1111111111111111111111110101:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 25>>);
-dec_huffman(<<2#1111111111111111111111110110:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 26>>);
-dec_huffman(<<2#1111111111111111111111110111:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 27>>);
-dec_huffman(<<2#1111111111111111111111111000:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 28>>);
-dec_huffman(<<2#1111111111111111111111111001:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 29>>);
-dec_huffman(<<2#1111111111111111111111111010:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 30>>);
-dec_huffman(<<2#1111111111111111111111111011:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 31>>);
-dec_huffman(<<2#1111111111111111111111111100:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 127>>);
-dec_huffman(<<2#1111111111111111111111111101:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 220>>);
-dec_huffman(<<2#1111111111111111111111111110:28, R/bits>>, L, A) -> dec_huffman(R, L - 28, <<A/binary, 249>>);
-dec_huffman(<<2#111111111111111111111111111100:30, R/bits>>, L, A) -> dec_huffman(R, L - 30, <<A/binary, 10>>);
-dec_huffman(<<2#111111111111111111111111111101:30, R/bits>>, L, A) -> dec_huffman(R, L - 30, <<A/binary, 13>>);
-dec_huffman(<<2#111111111111111111111111111110:30, R/bits>>, L, A) -> dec_huffman(R, L - 30, <<A/binary, 22>>).
+dec_huffman(<<A:4, B:4, R/bits>>, Len, Huff0, Acc) when Len > 1 ->
+	{_, CharA, Huff1} = dec_huffman_lookup(Huff0, A),
+	{_, CharB, Huff} = dec_huffman_lookup(Huff1, B),
+	case {CharA, CharB} of
+		{undefined, undefined} -> dec_huffman(R, Len - 1, Huff, Acc);
+		{CharA, undefined} -> dec_huffman(R, Len - 1, Huff, <<Acc/binary, CharA>>);
+		{undefined, CharB} -> dec_huffman(R, Len - 1, Huff, <<Acc/binary, CharB>>);
+		{CharA, CharB} -> dec_huffman(R, Len - 1, Huff, <<Acc/binary, CharA, CharB>>)
+	end;
+dec_huffman(<<A:4, B:4, Rest/bits>>, 1, Huff0, Acc) ->
+	{_, CharA, Huff} = dec_huffman_lookup(Huff0, A),
+	{ok, CharB, _} = dec_huffman_lookup(Huff, B),
+	case {CharA, CharB} of
+		%% {undefined, undefined} (> 7-bit final padding) is rejected with a crash.
+		{CharA, undefined} ->
+			{<<Acc/binary, CharA>>, Rest};
+		{undefined, CharB} ->
+			{<<Acc/binary, CharB>>, Rest};
+		_ ->
+			{<<Acc/binary, CharA, CharB>>, Rest}
+	end;
+%% Can only be reached when the string length to decode is 0.
+dec_huffman(Rest, 0, _, <<>>) ->
+	{<<>>, Rest}.
+
+-include("cow_hpack_dec_huffman_lookup.hrl").
 
 -ifdef(TEST).
+%% Test case extracted from h2spec.
+decode_reject_eos_test() ->
+	{'EXIT', _} = (catch decode(<<16#0085f2b24a84ff874951fffffffa7f:120>>)),
+	ok.
+
 req_decode_test() ->
 	%% First request (raw then huffman).
 	{Headers1, State1} = decode(<< 16#828684410f7777772e6578616d706c652e636f6d:160 >>),
@@ -583,7 +363,7 @@ table_update_decode_test() ->
 	%% Set a new configured max_size to avoid header evictions.
 	State2 = set_max_size(512, State1),
 	%% Second response with the table size update (raw then huffman).
-	MaxSize = enc_big_int(512 - 31, []),
+	MaxSize = enc_big_int(512 - 31, <<>>),
 	{Headers2, State3} = decode(
 		iolist_to_binary([<< 2#00111111>>, MaxSize, <<16#4803333037c1c0bf:64>>]),
 		State2),
@@ -625,7 +405,7 @@ table_update_decode_smaller_test() ->
 	%% Set a new configured max_size to avoid header evictions.
 	State2 = set_max_size(512, State1),
 	%% Second response with the table size update smaller than the limit (raw then huffman).
-	MaxSize = enc_big_int(400 - 31, []),
+	MaxSize = enc_big_int(400 - 31, <<>>),
 	{Headers2, State3} = decode(
 		iolist_to_binary([<< 2#00111111>>, MaxSize, <<16#4803333037c1c0bf:64>>]),
 		State2),
@@ -667,7 +447,7 @@ table_update_decode_too_large_test() ->
 	%% Set a new configured max_size to avoid header evictions.
 	State2 = set_max_size(512, State1),
 	%% Second response with the table size update (raw then huffman).
-	MaxSize = enc_big_int(1024 - 31, []),
+	MaxSize = enc_big_int(1024 - 31, <<>>),
 	{'EXIT', _} = (catch decode(
 		iolist_to_binary([<< 2#00111111>>, MaxSize, <<16#4803333037c1c0bf:64>>]),
 		State2)),
@@ -697,7 +477,7 @@ table_update_decode_zero_test() ->
 	%% Second response with the table size update (raw then huffman).
 	%% We set the table size to 0 to evict all values before setting
 	%% it to 512 so we only get the second request indexed.
-	MaxSize = enc_big_int(512 - 31, []),
+	MaxSize = enc_big_int(512 - 31, <<>>),
 	{Headers1, State3} = decode(iolist_to_binary([
 		<<2#00100000, 2#00111111>>, MaxSize,
 		<<16#4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d:560>>]),
@@ -712,46 +492,81 @@ table_update_decode_zero_test() ->
 		{52,{<<"cache-control">>, <<"private">>}},
 		{42,{<<":status">>, <<"302">>}}]} = State3,
 	ok.
+
+horse_decode_raw() ->
+	horse:repeat(20000,
+		do_horse_decode_raw()
+	).
+
+do_horse_decode_raw() ->
+	{_, State1} = decode(<<16#828684410f7777772e6578616d706c652e636f6d:160>>),
+	{_, State2} = decode(<<16#828684be58086e6f2d6361636865:112>>, State1),
+	{_, _} = decode(<<16#828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565:232>>, State2),
+	ok.
+
+horse_decode_huffman() ->
+	horse:repeat(20000,
+		do_horse_decode_huffman()
+	).
+
+do_horse_decode_huffman() ->
+	{_, State1} = decode(<<16#828684418cf1e3c2e5f23a6ba0ab90f4ff:136>>),
+	{_, State2} = decode(<<16#828684be5886a8eb10649cbf:96>>, State1),
+	{_, _} = decode(<<16#828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf:192>>, State2),
+	ok.
 -endif.
 
 %% Encoding.
 
 -spec encode(cow_http:headers()) -> {iodata(), state()}.
 encode(Headers) ->
-	encode(Headers, init(), #{}, []).
+	encode(Headers, init(), huffman, []).
 
 -spec encode(cow_http:headers(), State) -> {iodata(), State} when State::state().
 encode(Headers, State=#state{max_size=MaxSize, configured_max_size=MaxSize}) ->
-	encode(Headers, State, #{}, []);
+	encode(Headers, State, huffman, []);
 encode(Headers, State0=#state{configured_max_size=MaxSize}) ->
-	{Data, State} = encode(Headers, State0#state{max_size=MaxSize}, #{}, []),
-	{[enc_int5(MaxSize, 2#001), Data], State}.
+	State1 = table_update_size(MaxSize, State0),
+	{Data, State} = encode(Headers, State1, huffman, []),
+	{[enc_int5(MaxSize, 2#001)|Data], State}.
 
 -spec encode(cow_http:headers(), State, opts()) -> {iodata(), State} when State::state().
 encode(Headers, State=#state{max_size=MaxSize, configured_max_size=MaxSize}, Opts) ->
-	encode(Headers, State, Opts, []);
+	encode(Headers, State, huffman_opt(Opts), []);
 encode(Headers, State0=#state{configured_max_size=MaxSize}, Opts) ->
-	{Data, State} = encode(Headers, State0#state{max_size=MaxSize}, Opts, []),
-	{[enc_int5(MaxSize, 2#001), Data], State}.
+	State1 = table_update_size(MaxSize, State0),
+	{Data, State} = encode(Headers, State1, huffman_opt(Opts), []),
+	{[enc_int5(MaxSize, 2#001)|Data], State}.
+
+huffman_opt(#{huffman := false}) -> no_huffman;
+huffman_opt(_) -> huffman.
 
 %% @todo Handle cases where no/never indexing is expected.
 encode([], State, _, Acc) ->
 	{lists:reverse(Acc), State};
-encode([_Header0 = {Name, Value0}|Tail], State, Opts, Acc) ->
-	Value = iolist_to_binary(Value0),
+encode([{Name, Value0}|Tail], State, HuffmanOpt, Acc) ->
+	%% We conditionally call iolist_to_binary/1 because a small
+	%% but noticeable speed improvement happens when we do this.
+	Value = if
+		is_binary(Value0) -> Value0;
+		true -> iolist_to_binary(Value0)
+	end,
 	Header = {Name, Value},
 	case table_find(Header, State) of
 		%% Indexed header field representation.
 		{field, Index} ->
-			encode(Tail, State, Opts, [enc_int7(Index, 2#1)|Acc]);
+			encode(Tail, State, HuffmanOpt,
+				[enc_int7(Index, 2#1)|Acc]);
 		%% Literal header field representation: indexed name.
 		{name, Index} ->
 			State2 = table_insert(Header, State),
-			encode(Tail, State2, Opts, [[enc_int6(Index, 2#01), enc_str(Value, Opts)]|Acc]);
+			encode(Tail, State2, HuffmanOpt,
+				[[enc_int6(Index, 2#01)|enc_str(Value, HuffmanOpt)]|Acc]);
 		%% Literal header field representation: new name.
 		not_found ->
 			State2 = table_insert(Header, State),
-			encode(Tail, State2, Opts, [[<< 0:1, 1:1, 0:6 >>, enc_str(Name, Opts), enc_str(Value, Opts)]|Acc])
+			encode(Tail, State2, HuffmanOpt,
+				[[<< 0:1, 1:1, 0:6 >>|[enc_str(Name, HuffmanOpt)|enc_str(Value, HuffmanOpt)]]|Acc])
 	end.
 
 %% Encode an integer.
@@ -759,33 +574,30 @@ encode([_Header0 = {Name, Value0}|Tail], State, Opts, Acc) ->
 enc_int5(Int, Prefix) when Int < 31 ->
 	<< Prefix:3, Int:5 >>;
 enc_int5(Int, Prefix) ->
-	[<< Prefix:3, 2#11111:5 >>|enc_big_int(Int - 31, [])].
+	enc_big_int(Int - 31, << Prefix:3, 2#11111:5 >>).
 
 enc_int6(Int, Prefix) when Int < 63 ->
 	<< Prefix:2, Int:6 >>;
 enc_int6(Int, Prefix) ->
-	[<< Prefix:2, 2#111111:6 >>|enc_big_int(Int - 63, [])].
+	enc_big_int(Int - 63, << Prefix:2, 2#111111:6 >>).
 
 enc_int7(Int, Prefix) when Int < 127 ->
 	<< Prefix:1, Int:7 >>;
 enc_int7(Int, Prefix) ->
-	[<< Prefix:1, 2#1111111:7 >>|enc_big_int(Int - 127, [])].
+	enc_big_int(Int - 127, << Prefix:1, 2#1111111:7 >>).
 
 enc_big_int(Int, Acc) when Int < 128 ->
-	lists:reverse([<< Int:8 >>|Acc]);
+	<<Acc/binary, Int:8>>;
 enc_big_int(Int, Acc) ->
-	enc_big_int(Int bsr 7, [<< 1:1, Int:7 >>|Acc]).
+	enc_big_int(Int bsr 7, <<Acc/binary, 1:1, Int:7>>).
 
 %% Encode a string.
 
-enc_str(Str, Opts) ->
-	case maps:get(huffman, Opts, true) of
-		true ->
-			Str2 = enc_huffman(Str, <<>>),
-			[enc_int7(byte_size(Str2), 2#1), Str2];
-		false ->
-			[enc_int7(iolist_size(Str), 2#0), Str]
-	end.
+enc_str(Str, huffman) ->
+	Str2 = enc_huffman(Str, <<>>),
+	[enc_int7(byte_size(Str2), 2#1)|Str2];
+enc_str(Str, no_huffman) ->
+	[enc_int7(byte_size(Str), 2#0)|Str].
 
 enc_huffman(<<>>, Acc) ->
 	case bit_size(Acc) rem 8 of
@@ -1206,6 +1018,43 @@ table_update_encode_test() ->
 		{42,{<<":status">>, <<"302">>}}]} = EncState3,
 	ok.
 
+%% Check that encode/2 is using the new table size after calling
+%% set_max_size/1 and that adding entries larger than the max size
+%% results in an empty table.
+table_update_encode_max_size_0_test() ->
+	%% Encoding starts with default max size
+	EncState0 = init(),
+	%% Decoding starts with max size of 0
+	DecState0 = init(0),
+	%% First request.
+	Headers1 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>}
+	],
+	{Encoded1, EncState1} = encode(Headers1, EncState0),
+	{Headers1, DecState1} = decode(iolist_to_binary(Encoded1), DecState0),
+	#state{size=57, dyn_table=[{57,{<<":authority">>, <<"www.example.com">>}}]} = EncState1,
+	#state{size=0, dyn_table=[]} = DecState1,
+	%% Settings received after the first request.
+	EncState2 = set_max_size(0, EncState1),
+	#state{configured_max_size=0, max_size=4096,
+	       size=57, dyn_table=[{57,{<<":authority">>, <<"www.example.com">>}}]} = EncState2,
+	%% Second request.
+	Headers2 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>},
+		{<<"cache-control">>, <<"no-cache">>}
+	],
+	{Encoded2, EncState3} = encode(Headers2, EncState2),
+	{Headers2, DecState2} = decode(iolist_to_binary(Encoded2), DecState1),
+	#state{configured_max_size=0, max_size=0, size=0, dyn_table=[]} = EncState3,
+	#state{size=0, dyn_table=[]} = DecState2,
+	ok.
+
 encode_iolist_test() ->
 	Headers = [
 		{<<":method">>, <<"GET">>},
@@ -1215,6 +1064,68 @@ encode_iolist_test() ->
 		{<<"content-type">>, [<<"image">>,<<"/">>,<<"png">>,<<>>]}
 	],
 	{_, _} = encode(Headers),
+	ok.
+
+horse_encode_raw() ->
+	horse:repeat(20000,
+		do_horse_encode_raw()
+	).
+
+do_horse_encode_raw() ->
+	Headers1 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>}
+	],
+	{_, State1} = encode(Headers1, init(), #{huffman => false}),
+	Headers2 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>},
+		{<<"cache-control">>, <<"no-cache">>}
+	],
+	{_, State2} = encode(Headers2, State1, #{huffman => false}),
+	Headers3 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":path">>, <<"/index.html">>},
+		{<<":authority">>, <<"www.example.com">>},
+		{<<"custom-key">>, <<"custom-value">>}
+	],
+	{_, _} = encode(Headers3, State2, #{huffman => false}),
+	ok.
+
+horse_encode_huffman() ->
+	horse:repeat(20000,
+		do_horse_encode_huffman()
+	).
+
+do_horse_encode_huffman() ->
+	Headers1 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>}
+	],
+	{_, State1} = encode(Headers1),
+	Headers2 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"http">>},
+		{<<":path">>, <<"/">>},
+		{<<":authority">>, <<"www.example.com">>},
+		{<<"cache-control">>, <<"no-cache">>}
+	],
+	{_, State2} = encode(Headers2, State1),
+	Headers3 = [
+		{<<":method">>, <<"GET">>},
+		{<<":scheme">>, <<"https">>},
+		{<<":path">>, <<"/index.html">>},
+		{<<":authority">>, <<"www.example.com">>},
+		{<<"custom-key">>, <<"custom-value">>}
+	],
+	{_, _} = encode(Headers3, State2),
 	ok.
 -endif.
 
@@ -1493,13 +1404,21 @@ table_get_name(Index, #state{dyn_table=DynamicTable}) ->
 
 table_insert(Entry = {Name, Value}, State=#state{size=Size, max_size=MaxSize, dyn_table=DynamicTable}) ->
 	EntrySize = byte_size(Name) + byte_size(Value) + 32,
-	{DynamicTable2, Size2} = if
-		Size + EntrySize > MaxSize ->
-			table_resize(DynamicTable, MaxSize - EntrySize, 0, []);
-		true ->
-			{DynamicTable, Size}
-	end,
-	State#state{size=Size2 + EntrySize, dyn_table=[{EntrySize, Entry}|DynamicTable2]}.
+	if
+		EntrySize + Size =< MaxSize ->
+			%% Add entry without eviction
+			State#state{size=Size + EntrySize, dyn_table=[{EntrySize, Entry}|DynamicTable]};
+		EntrySize =< MaxSize ->
+			%% Evict, then add entry
+			{DynamicTable2, Size2} = table_resize(DynamicTable, MaxSize - EntrySize, 0, []),
+			State#state{size=Size2 + EntrySize, dyn_table=[{EntrySize, Entry}|DynamicTable2]};
+		EntrySize > MaxSize ->
+			%% "an attempt to add an entry larger than the
+			%% maximum size causes the table to be emptied
+			%% of all existing entries and results in an
+			%% empty table" (RFC 7541, 4.4)
+			State#state{size=0, dyn_table=[]}
+	end.
 
 table_resize([], _, Size, Acc) ->
 	{lists:reverse(Acc), Size};
@@ -1510,8 +1429,9 @@ table_resize([Entry = {EntrySize, _}|Tail], MaxSize, Size, Acc) ->
 
 table_update_size(0, State) ->
 	State#state{size=0, max_size=0, dyn_table=[]};
-table_update_size(MaxSize, State=#state{max_size=MaxSize}) ->
-	State;
+table_update_size(MaxSize, State=#state{size=CurrentSize})
+		when CurrentSize =< MaxSize ->
+	State#state{max_size=MaxSize};
 table_update_size(MaxSize, State=#state{dyn_table=DynTable}) ->
 	{DynTable2, Size} = table_resize(DynTable, MaxSize, 0, []),
 	State#state{size=Size, max_size=MaxSize, dyn_table=DynTable2}.
@@ -1519,11 +1439,11 @@ table_update_size(MaxSize, State=#state{dyn_table=DynTable}) ->
 -ifdef(TEST).
 prop_str_raw() ->
 	?FORALL(Str, binary(), begin
-		{Str, <<>>} =:= dec_str(iolist_to_binary(enc_str(Str, #{huffman => false})))
+		{Str, <<>>} =:= dec_str(iolist_to_binary(enc_str(Str, no_huffman)))
 	end).
 
 prop_str_huffman() ->
 	?FORALL(Str, binary(), begin
-		{Str, <<>>} =:= dec_str(iolist_to_binary(enc_str(Str, #{huffman => true})))
+		{Str, <<>>} =:= dec_str(iolist_to_binary(enc_str(Str, huffman)))
 	end).
 -endif.

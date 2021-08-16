@@ -40,7 +40,7 @@ end
 
 defmodule Phoenix.ActionClauseError do
   exception_keys =
-    FunctionClauseError.__struct__
+    FunctionClauseError.__struct__()
     |> Map.keys()
     |> Kernel.--([:__exception__, :__struct__])
 
@@ -56,7 +56,7 @@ defmodule Phoenix.ActionClauseError do
     {exception, stacktrace} =
       exception
       |> Map.put(:__struct__, FunctionClauseError)
-      |> FunctionClauseError.blame(exception, stacktrace)
+      |> FunctionClauseError.blame(stacktrace)
 
     exception = Map.put(exception, :__struct__, __MODULE__)
 
@@ -66,4 +66,5 @@ end
 
 defimpl Plug.Exception, for: Phoenix.ActionClauseError do
   def status(_), do: 400
+  def actions(_), do: []
 end

@@ -1,35 +1,34 @@
 defmodule Credo.Check.Readability.LargeNumbers do
-  @moduledoc false
+  use Credo.Check,
+    base_priority: :high,
+    tags: [:formatter],
+    param_defaults: [
+      only_greater_than: 9_999
+    ],
+    explanations: [
+      check: """
+      Numbers can contain underscores for readability purposes.
+      These do not affect the value of the number, but can help read large numbers
+      more easily.
 
-  @checkdoc """
-  Numbers can contain underscores for readability purposes.
-  These do not affect the value of the number, but can help read large numbers
-  more easily.
+          141592654 # how large is this number?
 
-      141592654 # how large is this number?
+          141_592_654 # ah, it's in the hundreds of millions!
 
-      141_592_654 # ah, it's in the hundreds of millions!
-
-  Like all `Readability` issues, this one is not a technical concern.
-  But you can improve the odds of others reading and liking your code by making
-  it easier to follow.
-  """
-  @explanation [
-    check: @checkdoc,
-    params: [
-      only_greater_than: "The check only reports numbers greater than this."
+      Like all `Readability` issues, this one is not a technical concern.
+      But you can improve the odds of others reading and liking your code by making
+      it easier to follow.
+      """,
+      params: [
+        only_greater_than: "The check only reports numbers greater than this."
+      ]
     ]
-  ]
-  @default_params [
-    only_greater_than: 9_999
-  ]
-
-  use Credo.Check, base_priority: :high
 
   @doc false
-  def run(source_file, params \\ []) do
+  # TODO: consider for experimental check front-loader (tokens)
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
-    min_number = Params.get(params, :only_greater_than, @default_params)
+    min_number = Params.get(params, :only_greater_than, __MODULE__)
 
     source_file
     |> Credo.Code.to_tokens()
@@ -43,11 +42,15 @@ defmodule Credo.Check.Readability.LargeNumbers do
     acc =
       case number_token(head, min_number) do
         nil -> acc
-        false -> acc
         token -> acc ++ [token]
       end
 
     collect_number_tokens(t, acc, min_number)
+  end
+
+  # tuple for Elixir >= 1.10.0
+  defp number_token({:flt, {_, _, number}, _} = tuple, min_number) when min_number < number do
+    tuple
   end
 
   # tuple for Elixir >= 1.6.0
@@ -68,6 +71,17 @@ defmodule Credo.Check.Readability.LargeNumbers do
 
   defp find_issues([], acc, _issue_meta) do
     acc
+  end
+
+  # tuple for Elixir >= 1.10.0
+  defp find_issues(
+         [{:flt, {line_no, column1, number} = location, _} | t],
+         acc,
+         issue_meta
+       ) do
+    acc = acc ++ find_issue(line_no, column1, location, number, issue_meta)
+
+    find_issues(t, acc, issue_meta)
   end
 
   # tuple for Elixir >= 1.6.0

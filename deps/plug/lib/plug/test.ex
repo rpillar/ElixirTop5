@@ -16,7 +16,7 @@ defmodule Plug.Test do
   include uppercase letters, and raises a `Plug.Conn.InvalidHeaderError` when it finds one.
   To disable it, set :validate_header_keys_during_test to false on the app config.
 
-      config :plug, :validate_header_keys_during_test, true
+      config :plug, :validate_header_keys_during_test, false
 
   """
 
@@ -37,6 +37,10 @@ defmodule Plug.Test do
   The request `method` and `path` are required arguments. `method` may be any
   value that implements `to_string/1` and it will properly converted and
   normalized (e.g., `:get` or `"post"`).
+
+  The `path` is commonly the request path with optional query string but it may
+  also be a complete URI. When a URI is given, the host and schema will be used
+  as part of the request too.
 
   The `params_or_body` field must be one of:
 
@@ -202,8 +206,19 @@ defmodule Plug.Test do
   """
   @spec recycle_cookies(Conn.t(), Conn.t()) :: Conn.t()
   def recycle_cookies(new_conn, old_conn) do
-    Enum.reduce(Plug.Conn.fetch_cookies(old_conn).cookies, new_conn, fn {key, value}, acc ->
-      put_req_cookie(acc, to_string(key), value)
+    req_cookies = Plug.Conn.fetch_cookies(old_conn).req_cookies
+
+    resp_cookies =
+      Enum.reduce(old_conn.resp_cookies, req_cookies, fn {key, opts}, acc ->
+        if value = Map.get(opts, :value) do
+          Map.put(acc, key, value)
+        else
+          Map.delete(acc, key)
+        end
+      end)
+
+    Enum.reduce(resp_cookies, new_conn, fn {key, value}, acc ->
+      put_req_cookie(acc, key, value)
     end)
   end
 
@@ -213,7 +228,7 @@ defmodule Plug.Test do
   If the session has already been initialized, the new contents will be merged
   with the previous ones.
   """
-  @spec init_test_session(Conn.t(), %{(String.t() | atom) => any}) :: Conn.t()
+  @spec init_test_session(Conn.t(), %{optional(String.t() | atom) => any}) :: Conn.t()
   def init_test_session(conn, session) do
     conn =
       if conn.private[:plug_session_fetch] do

@@ -20,7 +20,7 @@ defmodule Ecto.Adapters.MyXQL do
     * `:username` - Username
     * `:password` - User password
     * `:database` - the database to connect to
-    * `:pool` - The connection pool module, defaults to `DBConnection.ConnectionPool`
+    * `:pool` - The connection pool module, may be set to `Ecto.Adapters.SQL.Sandbox`
     * `:ssl` - Set to true if ssl should be used (default: false)
     * `:ssl_opts` - A list of ssl options, see Erlang's `ssl` docs
     * `:connect_timeout` - The timeout for establishing new connections (default: 5000)
@@ -29,6 +29,9 @@ defmodule Ecto.Adapters.MyXQL do
       via the `mysql` command. For more information, please check
       [MySQL docs](https://dev.mysql.com/doc/en/connecting.html)
     * `:socket_options` - Specifies socket configuration
+    * `:show_sensitive_data_on_connection_error` - show connection data and
+      configuration whenever there is an error attempting to connect to the
+      database
 
   The `:socket_options` are particularly useful when configuring the size
   of both send and receive buffers. For example, when Ecto starts with a
@@ -44,7 +47,7 @@ defmodule Ecto.Adapters.MyXQL do
 
   ### Storage options
 
-    * `:charset` - the database encoding (default: "utf8")
+    * `:charset` - the database encoding (default: "utf8mb4")
     * `:collation` - the collation order
     * `:dump_path` - where to place dumped structures
 
@@ -54,7 +57,7 @@ defmodule Ecto.Adapters.MyXQL do
   to the database, you can use the `:after_connect` configuration. For
   example, in your repository configuration you can add:
 
-    after_connect: {MyXQL, :query!, ["SET variable = value", []]}
+      after_connect: {MyXQL, :query!, ["SET variable = value", []]}
 
   You can also specify your own module that will receive the MyXQL
   connection as argument.
@@ -86,6 +89,23 @@ defmodule Ecto.Adapters.MyXQL do
   automatically commits after some commands like CREATE TABLE.
   Therefore MySQL migrations does not run inside transactions.
 
+  ## Old MySQL versions
+
+  ### JSON support
+
+  MySQL introduced a native JSON type in v5.7.8, if your server is
+  using this version or higher, you may use `:map` type for your
+  column in migration:
+
+      add :some_field, :map
+
+  If you're using older server versions, use a `TEXT` field instead:
+
+      add :some_field, :text
+
+  in either case, the adapter will automatically encode/decode the
+  value from JSON.
+
   ### usec in datetime
 
   Old MySQL versions did not support usec in datetime while
@@ -101,9 +121,7 @@ defmodule Ecto.Adapters.MyXQL do
   """
 
   # Inherit all behaviour from Ecto.Adapters.SQL
-  use Ecto.Adapters.SQL,
-    driver: :myxql,
-    migration_lock: "FOR UPDATE"
+  use Ecto.Adapters.SQL, driver: :myxql
 
   # And provide a custom storage implementation
   @behaviour Ecto.Adapter.Storage
@@ -112,16 +130,17 @@ defmodule Ecto.Adapters.MyXQL do
   ## Custom MySQL types
 
   @impl true
-  def loaders({:embed, _} = type, _), do: [&json_decode/1, &Ecto.Adapters.SQL.load_embed(type, &1)]
-  def loaders({:map, _}, type),       do: [&json_decode/1, &Ecto.Adapters.SQL.load_embed(type, &1)]
-  def loaders(:map, type),            do: [&json_decode/1, type]
-  def loaders(:float, type),          do: [&float_decode/1, type]
-  def loaders(:boolean, type),        do: [&bool_decode/1, type]
-  def loaders(:binary_id, type),      do: [Ecto.UUID, type]
-  def loaders(_, type),               do: [type]
+  def loaders({:map, _}, type),   do: [&json_decode/1, &Ecto.Type.embedded_load(type, &1, :json)]
+  def loaders(:map, type),        do: [&json_decode/1, type]
+  def loaders(:float, type),      do: [&float_decode/1, type]
+  def loaders(:boolean, type),    do: [&bool_decode/1, type]
+  def loaders(:binary_id, type),  do: [Ecto.UUID, type]
+  def loaders(_, type),           do: [type]
 
   defp bool_decode(<<0>>), do: {:ok, false}
   defp bool_decode(<<1>>), do: {:ok, true}
+  defp bool_decode(<<0::size(1)>>), do: {:ok, false}
+  defp bool_decode(<<1::size(1)>>), do: {:ok, true}
   defp bool_decode(0), do: {:ok, false}
   defp bool_decode(1), do: {:ok, true}
   defp bool_decode(x), do: {:ok, x}
@@ -138,21 +157,27 @@ defmodule Ecto.Adapters.MyXQL do
   def storage_up(opts) do
     database = Keyword.fetch!(opts, :database) || raise ":database is nil in repository configuration"
     opts = Keyword.delete(opts, :database)
-    charset = opts[:charset] || "utf8"
+    charset = opts[:charset] || "utf8mb4"
 
-    command =
-      ~s(CREATE DATABASE `#{database}` DEFAULT CHARACTER SET = #{charset})
-      |> concat_if(opts[:collation], &"DEFAULT COLLATE = #{&1}")
-
-    case run_query(command, opts) do
-      {:ok, _} ->
-        :ok
-      {:error, %{mysql: %{name: :ER_DB_CREATE_EXISTS}}} ->
+    check_existence_command = "SELECT TRUE FROM information_schema.schemata WHERE schema_name = '#{database}'"
+    case run_query(check_existence_command, opts) do
+      {:ok, %{num_rows: 1}} ->
         {:error, :already_up}
-      {:error, error} ->
-        {:error, Exception.message(error)}
-      {:exit, exit} ->
-        {:error, exit_to_exception(exit)}
+      _ ->
+        create_command =
+          ~s(CREATE DATABASE `#{database}` DEFAULT CHARACTER SET = #{charset})
+          |> concat_if(opts[:collation], &"DEFAULT COLLATE = #{&1}")
+
+        case run_query(create_command, opts) do
+          {:ok, _} ->
+            :ok
+          {:error, %{mysql: %{name: :ER_DB_CREATE_EXISTS}}} ->
+            {:error, :already_up}
+          {:error, error} ->
+            {:error, Exception.message(error)}
+          {:exit, exit} ->
+            {:error, exit_to_exception(exit)}
+        end
     end
   end
 
@@ -179,9 +204,48 @@ defmodule Ecto.Adapters.MyXQL do
     end
   end
 
+  @impl Ecto.Adapter.Storage
+  def storage_status(opts) do
+    database = Keyword.fetch!(opts, :database) || raise ":database is nil in repository configuration"
+    opts = Keyword.delete(opts, :database)
+
+    check_database_query = "SELECT schema_name FROM information_schema.schemata WHERE schema_name = '#{database}'"
+
+    case run_query(check_database_query, opts) do
+      {:ok, %{num_rows: 0}} -> :down
+      {:ok, %{num_rows: _num_rows}} -> :up
+      other -> {:error, other}
+    end
+  end
+
   @impl true
   def supports_ddl_transaction? do
     false
+  end
+
+  @impl true
+  def lock_for_migrations(meta, opts, fun) do
+    %{opts: adapter_opts, repo: repo} = meta
+
+    if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
+      Ecto.Adapters.SQL.raise_migration_pool_size_error()
+    end
+
+    opts = opts ++ [log: false, timeout: :infinity]
+
+    {:ok, result} =
+      transaction(meta, opts, fn ->
+        lock_name = "\"ecto_#{inspect(repo)}\""
+
+        try do
+          {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT GET_LOCK(#{lock_name}, -1)", [], opts)
+          fun.()
+        after
+          {:ok, _} = Ecto.Adapters.SQL.query(meta, "SELECT RELEASE_LOCK(#{lock_name})", [], opts)
+        end
+      end)
+
+    result
   end
 
   @impl true
@@ -191,7 +255,8 @@ defmodule Ecto.Adapters.MyXQL do
 
     key = primary_key!(schema_meta, returning)
     {fields, values} = :lists.unzip(params)
-    sql = @conn.insert(prefix, source, fields, [fields], on_conflict, [])
+    sql = @conn.insert(prefix, source, fields, [fields], on_conflict, [], [])
+    opts = [{:cache_statement, "ecto_insert_#{source}"} | opts]
 
     case Ecto.Adapters.SQL.query(adapter_meta, sql, values ++ query_params, opts) do
       {:ok, %{num_rows: 1, last_insert_id: last_insert_id}} ->
@@ -201,7 +266,7 @@ defmodule Ecto.Adapters.MyXQL do
         {:ok, last_insert_id(key, last_insert_id)}
 
       {:error, err} ->
-        case @conn.to_constraints(err) do
+        case @conn.to_constraints(err, source: source) do
           []          -> raise err
           constraints -> {:invalid, constraints}
         end
@@ -255,9 +320,7 @@ defmodule Ecto.Adapters.MyXQL do
   defp append_versions(table, versions, contents) do
     {:ok,
       contents <>
-      ~s[INSERT INTO `#{table}` (version) VALUES ] <>
-      Enum.map_join(versions, ", ", &"(#{&1})") <>
-      ~s[;\n\n]}
+      Enum.map_join(versions, &~s[INSERT INTO `#{table}` (version) VALUES (#{&1});\n])}
   end
 
   @impl true
@@ -278,6 +341,7 @@ defmodule Ecto.Adapters.MyXQL do
   ## Helpers
 
   defp run_query(sql, opts) do
+    {:ok, _} = Application.ensure_all_started(:ecto_sql)
     {:ok, _} = Application.ensure_all_started(:myxql)
 
     opts =
@@ -286,9 +350,7 @@ defmodule Ecto.Adapters.MyXQL do
       |> Keyword.put(:backoff_type, :stop)
       |> Keyword.put(:max_restarts, 0)
 
-    {:ok, pid} = Task.Supervisor.start_link
-
-    task = Task.Supervisor.async_nolink(pid, fn ->
+    task = Task.Supervisor.async_nolink(Ecto.Adapters.SQL.StorageSupervisor, fn ->
       {:ok, conn} = MyXQL.start_link(opts)
 
       value = MyXQL.query(conn, sql, [], opts)

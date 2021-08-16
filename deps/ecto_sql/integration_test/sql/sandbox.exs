@@ -7,10 +7,22 @@ defmodule Ecto.Integration.SandboxTest do
 
   import ExUnit.CaptureLog
 
+  Application.put_env(:ecto_sql, __MODULE__.DynamicRepo, Application.get_env(:ecto_sql, TestRepo))
+
+  defmodule DynamicRepo do
+    use Ecto.Repo, otp_app: :ecto_sql, adapter: TestRepo.__adapter__()
+  end
+
   describe "errors" do
-    test "raises if repo is not started or not exist" do
-      assert_raise RuntimeError, ~r"could not lookup UnknownRepo because it was not started", fn ->
+    test "raises if repo doesn't exist" do
+      assert_raise UndefinedFunctionError, ~r"function UnknownRepo.get_dynamic_repo/0 is undefined", fn ->
         Sandbox.mode(UnknownRepo, :manual)
+      end
+    end
+
+    test "raises if repo is not started" do
+      assert_raise RuntimeError, ~r"could not lookup Ecto repo #{inspect DynamicRepo} because it was not started", fn ->
+        Sandbox.mode(DynamicRepo, :manual)
       end
     end
 
@@ -51,10 +63,11 @@ defmodule Ecto.Integration.SandboxTest do
       end
 
       parent = self()
+
       Task.start_link fn ->
         Sandbox.checkout(TestRepo)
         Sandbox.allow(TestRepo, self(), parent)
-        send parent, :allowed
+        send(parent, :allowed)
         Process.sleep(:infinity)
       end
 
@@ -62,12 +75,73 @@ defmodule Ecto.Integration.SandboxTest do
       assert TestRepo.all(Post) == []
     end
 
+    test "uses the repository when allowed from another process by registered name" do
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        TestRepo.all(Post)
+      end
+
+      parent = self()
+      Process.register(parent, __MODULE__)
+
+      Task.start_link fn ->
+        Sandbox.checkout(TestRepo)
+        Sandbox.allow(TestRepo, self(), __MODULE__)
+        send(parent, :allowed)
+        Process.sleep(:infinity)
+      end
+
+      assert_receive :allowed
+      assert TestRepo.all(Post) == []
+
+      Process.unregister(__MODULE__)
+    end
+
     test "uses the repository when shared from another process" do
-      Sandbox.checkout(TestRepo)
-      Sandbox.mode(TestRepo, {:shared, self()})
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        TestRepo.all(Post)
+      end
+
+      parent = self()
+
+      Task.start_link(fn ->
+        Sandbox.checkout(TestRepo)
+        Sandbox.mode(TestRepo, {:shared, self()})
+        send(parent, :shared)
+        Process.sleep(:infinity)
+      end)
+
+      assert_receive :shared
       assert Task.async(fn -> TestRepo.all(Post) end) |> Task.await == []
     after
       Sandbox.mode(TestRepo, :manual)
+    end
+
+    test "works with a dynamic repo" do
+      repo_pid = start_supervised!({DynamicRepo, name: nil})
+      DynamicRepo.put_dynamic_repo(repo_pid)
+
+      assert Sandbox.mode(DynamicRepo, :manual) == :ok
+
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        DynamicRepo.all(Post)
+      end
+
+      Sandbox.checkout(DynamicRepo)
+      assert DynamicRepo.all(Post) == []
+    end
+
+    test "works with a repo pid" do
+      repo_pid = start_supervised!({DynamicRepo, name: nil})
+      DynamicRepo.put_dynamic_repo(repo_pid)
+
+      assert Sandbox.mode(repo_pid, :manual) == :ok
+
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        DynamicRepo.all(Post)
+      end
+
+      Sandbox.checkout(repo_pid)
+      assert DynamicRepo.all(Post) == []
     end
   end
 
@@ -167,26 +241,76 @@ defmodule Ecto.Integration.SandboxTest do
   describe "checkouts" do
     test "with transaction inside checkout" do
       Sandbox.checkout(TestRepo)
+      refute TestRepo.checked_out?()
+      refute TestRepo.in_transaction?()
 
       TestRepo.checkout(fn ->
-        refute TestRepo.in_transaction?
+        assert TestRepo.checked_out?()
+        refute TestRepo.in_transaction?()
         TestRepo.transaction(fn ->
-          assert TestRepo.in_transaction?
+          assert TestRepo.checked_out?()
+          assert TestRepo.in_transaction?()
         end)
-        refute TestRepo.in_transaction?
+        assert TestRepo.checked_out?()
+        refute TestRepo.in_transaction?()
       end)
+
+      refute TestRepo.checked_out?()
+      refute TestRepo.in_transaction?()
     end
 
     test "with checkout inside transaction" do
       Sandbox.checkout(TestRepo)
+      refute TestRepo.checked_out?()
+      refute TestRepo.in_transaction?()
 
       TestRepo.transaction(fn ->
-        assert TestRepo.in_transaction?
+        assert TestRepo.checked_out?()
+        assert TestRepo.in_transaction?()
         TestRepo.checkout(fn ->
-          assert TestRepo.in_transaction?
+          assert TestRepo.checked_out?()
+          assert TestRepo.in_transaction?()
         end)
-        assert TestRepo.in_transaction?
+        assert TestRepo.checked_out?()
+        assert TestRepo.in_transaction?()
       end)
+
+      refute TestRepo.checked_out?()
+      refute TestRepo.in_transaction?()
+    end
+  end
+
+  describe "start_owner!/2" do
+    test "checks out the connection" do
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        TestRepo.all(Post)
+      end
+
+      owner = Sandbox.start_owner!(TestRepo)
+      assert TestRepo.all(Post) == []
+
+      :ok = Sandbox.stop_owner(owner)
+      refute Process.alive?(owner)
+    end
+
+    test "can set shared mode" do
+      assert_raise DBConnection.OwnershipError, ~r"cannot find ownership process", fn ->
+        TestRepo.all(Post)
+      end
+
+      parent = self()
+
+      Task.start_link(fn ->
+        owner = Sandbox.start_owner!(TestRepo, shared: true)
+        send(parent, {:owner, owner})
+        Process.sleep(:infinity)
+      end)
+
+      assert_receive {:owner, owner}
+      assert TestRepo.all(Post) == []
+      :ok = Sandbox.stop_owner(owner)
+    after
+      Sandbox.mode(TestRepo, :manual)
     end
   end
 end

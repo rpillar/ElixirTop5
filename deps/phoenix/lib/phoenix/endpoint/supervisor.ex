@@ -10,11 +10,11 @@ defmodule Phoenix.Endpoint.Supervisor do
   @doc """
   Starts the endpoint supervision tree.
   """
-  def start_link(otp_app, mod) do
-    case Supervisor.start_link(__MODULE__, {otp_app, mod}, name: mod) do
+  def start_link(otp_app, mod, opts \\ []) do
+    case Supervisor.start_link(__MODULE__, {otp_app, mod, opts}, name: mod) do
       {:ok, _} = ok ->
         warmup(mod)
-        log_access_info(otp_app, mod)
+        log_access_url(otp_app, mod, opts)
         ok
 
       {:error, _} = error ->
@@ -22,57 +22,114 @@ defmodule Phoenix.Endpoint.Supervisor do
     end
   end
 
-  @doc false
-  def init({otp_app, mod}) do
-    id = :crypto.strong_rand_bytes(16) |> Base.encode64
+  defp check_compile_configs!(mod, runtime_configs) do
+    compile_configs = mod.__compile_config__()
 
-    default_conf = [endpoint_id: id] ++ config(otp_app, mod)
+    bad_keys =
+      Enum.filter(Phoenix.Endpoint.Supervisor.compile_config_keys(), fn key ->
+        compile_config = Keyword.get(compile_configs, key)
+        runtime_config = Keyword.get(runtime_configs, key)
+
+        if compile_config != runtime_config do
+          require Logger
+
+          Logger.error("""
+          #{inspect(key)} mismatch for #{inspect(mod)}.
+
+          Compile time configuration: #{inspect(compile_config)}
+          Runtime configuration     : #{inspect(runtime_config)}
+
+          #{inspect(key)} is a compile-time configuration, so setting
+          it at runtime has no effect. Therefore you must set it in your
+          config/prod.exs or similar (not in your config/releases.exs)
+          and make sure the value doesn't change.
+          """)
+
+          true
+        else
+          false
+        end
+      end)
+
+    unless Enum.empty?(bad_keys) do
+      raise ArgumentError,
+            "expected these options to be unchanged from compile time: #{inspect(bad_keys)}"
+    end
+
+    :ok
+  end
+
+  @doc false
+  def init({otp_app, mod, opts}) do
+    default_conf = Phoenix.Config.merge(defaults(otp_app, mod), opts)
+    env_conf = config(otp_app, mod, default_conf)
 
     secret_conf =
-      case mod.init(:supervisor, default_conf) do
-        {:ok, conf} ->
-          if !Application.get_env(otp_app, mod) and conf == default_conf do
-            Logger.warn(
-              "no configuration found for otp_app #{inspect(otp_app)} and module #{inspect(mod)}"
-            )
+      case mod.init(:supervisor, env_conf) do
+        {:ok, init_conf} ->
+          if is_nil(Application.get_env(otp_app, mod)) and init_conf == env_conf do
+            Logger.warn("no configuration found for otp_app #{inspect(otp_app)} and module #{inspect(mod)}")
           end
 
-          conf
+          init_conf
 
         other ->
           raise ArgumentError, "expected init/2 callback to return {:ok, config}, got: #{inspect other}"
       end
 
+    extra_conf = [
+      endpoint_id: :crypto.strong_rand_bytes(16) |> Base.encode64(padding: false),
+      # TODO: Remove this once :pubsub is removed
+      pubsub_server: secret_conf[:pubsub_server] || secret_conf[:pubsub][:name]
+    ]
+
+    secret_conf = extra_conf ++ secret_conf
+    default_conf = extra_conf ++ default_conf
 
     # Drop all secrets from secret_conf before passing it around
     conf = Keyword.drop(secret_conf, [:secret_key_base])
     server? = server?(conf)
+    check_compile_configs!(mod, conf)
+
+    if conf[:instrumenters] do
+      Logger.warn(":instrumenters configuration for #{inspect(mod)} is deprecated and has no effect")
+    end
 
     if server? and conf[:code_reloader] do
       Phoenix.CodeReloader.Server.check_symlinks()
     end
 
     children =
-      config_children(mod, secret_conf, otp_app) ++
+      config_children(mod, secret_conf, default_conf) ++
       pubsub_children(mod, conf) ++
       socket_children(mod) ++
-      server_children(mod, conf, otp_app, server?) ++
+      server_children(mod, conf, server?) ++
       watcher_children(mod, conf, server?)
 
-    # Supervisor.init(children, strategy: :one_for_one)
-    {:ok, {{:one_for_one, 3, 5}, children}}
+    Supervisor.init(children, strategy: :one_for_one)
   end
 
-  defp pubsub_children(_mod, conf) do
+  defp pubsub_children(mod, conf) do
     pub_conf = conf[:pubsub]
 
-    if adapter = pub_conf[:adapter] do
-      unless pub_conf[:name] do
-        raise ArgumentError, "an adapter was given to :pubsub but no :name was defined, " <>
-          "please pass the :name option accordingly"
-      end
-      pub_conf = [fastlane: Phoenix.Channel.Server] ++ pub_conf
-      [supervisor(adapter, [pub_conf[:name], pub_conf])]
+    if pub_conf do
+      Logger.warn """
+      The :pubsub key in your #{inspect mod} is deprecated.
+
+      You must now start the pubsub in your application supervision tree.
+      Go to lib/my_app/application.ex and add the following:
+
+          {Phoenix.PubSub, #{inspect pub_conf}}
+
+      Now, back in your config files in config/*, you can remove the :pubsub
+      key and add the :pubsub_server key, with the PubSub name:
+
+          pubsub_server: #{inspect pub_conf[:name]}
+      """
+    end
+
+    if pub_conf[:adapter] do
+      [{Phoenix.PubSub, pub_conf}]
     else
       []
     end
@@ -84,29 +141,17 @@ defmodule Phoenix.Endpoint.Supervisor do
     |> Enum.map(fn {_, socket, opts} -> socket.child_spec([endpoint: endpoint] ++ opts) end)
   end
 
-  defp config_children(mod, conf, otp_app) do
-    args = [mod, conf, defaults(otp_app, mod), [name: Module.concat(mod, "Config")]]
-    [worker(Phoenix.Config, args)]
+  defp config_children(mod, conf, default_conf) do
+    args = {mod, conf, default_conf, name: Module.concat(mod, "Config")}
+    [{Phoenix.Config, args}]
   end
 
-  defp server_children(mod, config, otp_app, server?) do
+  defp server_children(mod, config, server?) do
     if server? do
       user_adapter = user_adapter(mod, config)
       autodetected_adapter = cowboy_version_adapter()
       warn_on_different_adapter_version(user_adapter, autodetected_adapter, mod)
-      adapter = user_adapter || autodetected_adapter
-
-      for {scheme, port} <- [http: 4000, https: 4040], opts = config[scheme] do
-        port = :proplists.get_value(:port, opts, port)
-
-        unless port do
-          raise "server can't start because :port in #{scheme} config is nil, " <>
-                  "please use a valid port number"
-        end
-
-        opts = [port: port_to_integer(port), otp_app: otp_app] ++ :proplists.delete(:port, opts)
-        adapter.child_spec(scheme, mod, opts)
-      end
+      (user_adapter || autodetected_adapter).child_specs(mod, config)
     else
       []
     end
@@ -135,7 +180,7 @@ defmodule Phoenix.Endpoint.Supervisor do
   end
 
   defp warn_on_different_adapter_version(CowboyAdapter, Cowboy2Adapter, endpoint) do
-    Logger.warn("""
+    Logger.error("""
     You have specified #{inspect CowboyAdapter} for Cowboy v1.x \
     in the :adapter configuration of your Phoenix endpoint #{inspect endpoint} \
     but your mix.exs has fetched Cowboy v2.x.
@@ -158,24 +203,21 @@ defmodule Phoenix.Endpoint.Supervisor do
 
   defp watcher_children(_mod, conf, server?) do
     if server? do
-      Enum.map(conf[:watchers], fn {cmd, args} ->
-        worker(Phoenix.Endpoint.Watcher, watcher_args(cmd, args),
-               id: {cmd, args}, restart: :transient)
-      end)
+      Enum.map(conf[:watchers], &{Phoenix.Endpoint.Watcher, &1})
     else
       []
     end
-  end
-  defp watcher_args(cmd, cmd_args) do
-    {args, opts} = Enum.split_while(cmd_args, &is_binary(&1))
-    [cmd, args, opts]
   end
 
   @doc """
   The endpoint configuration used at compile time.
   """
   def config(otp_app, endpoint) do
-    Phoenix.Config.from_env(otp_app, endpoint, defaults(otp_app, endpoint))
+    config(otp_app, endpoint, defaults(otp_app, endpoint))
+  end
+
+  defp config(otp_app, endpoint, defaults) do
+    Phoenix.Config.from_env(otp_app, endpoint, defaults)
   end
 
   @doc """
@@ -210,7 +252,6 @@ defmodule Phoenix.Endpoint.Supervisor do
      url: [host: "localhost", path: "/"],
 
      # Supervisor config
-     pubsub: [pool_size: 1],
      watchers: []]
   end
 
@@ -279,20 +320,14 @@ defmodule Phoenix.Endpoint.Supervisor do
   the `Phoenix.Config` layer knows how to cache it.
   """
   def struct_url(endpoint) do
-    url    = endpoint.config(:url)
-    struct = build_url(endpoint, url)
-    {:cache,
-      case url[:path] || "/" do
-        "/"  -> struct
-        path -> %{struct | path: path}
-      end}
+    url = endpoint.config(:url)
+    {:cache, build_url(endpoint, url)}
   end
 
   defp build_url(endpoint, url) do
-    build_url(endpoint.config(:https), endpoint.config(:http), url)
-  end
+    https = endpoint.config(:https)
+    http  = endpoint.config(:http)
 
-  defp build_url(https, http, url) do
     {scheme, port} =
       cond do
         https ->
@@ -306,6 +341,10 @@ defmodule Phoenix.Endpoint.Supervisor do
     scheme = url[:scheme] || scheme
     host   = host_to_binary(url[:host] || "localhost")
     port   = port_to_integer(url[:port] || port)
+
+    if host =~ ~r"[^:]:\d" do
+      Logger.warn("url: [host: ...] configuration value #{inspect(host)} for #{inspect(endpoint)} is invalid")
+    end
 
     %URI{scheme: scheme, port: port, host: host}
   end
@@ -322,7 +361,9 @@ defmodule Phoenix.Endpoint.Supervisor do
   defp empty_string_if_root(other), do: other
 
   @doc """
-  Returns the static path of a file in the static root directory.
+  Returns a two item tuple with the first element containing the
+  static path of a file in the static root directory
+  and the second element containing the sha512 of that file (for SRI).
 
   When the file exists, it includes a timestamp. When it doesn't exist,
   just the static path is returned.
@@ -332,19 +373,19 @@ defmodule Phoenix.Endpoint.Supervisor do
   """
   @invalid_local_url_chars ["\\"]
 
-  def static_path(_endpoint, "//" <> _ = path) do
+  def static_lookup(_endpoint, "//" <> _ = path) do
     raise_invalid_path(path)
   end
 
-  def static_path(_endpoint, "/" <> _ = path) do
+  def static_lookup(_endpoint, "/" <> _ = path) do
     if String.contains?(path, @invalid_local_url_chars) do
       raise ArgumentError, "unsafe characters detected for path #{inspect path}"
     else
-      {:nocache, path}
+      {:nocache, {path, nil}}
     end
   end
 
-  def static_path(_endpoint, path) when is_binary(path) do
+  def static_lookup(_endpoint, path) when is_binary(path) do
     raise_invalid_path(path)
   end
 
@@ -352,26 +393,22 @@ defmodule Phoenix.Endpoint.Supervisor do
     raise ArgumentError, "expected a path starting with a single / but got #{inspect path}"
   end
 
-  # TODO: Deprecate {:system, env_var} once we require Elixir v1.7+
+  # TODO: Deprecate {:system, env_var} once we require Elixir v1.9+
   defp host_to_binary({:system, env_var}), do: host_to_binary(System.get_env(env_var))
   defp host_to_binary(host), do: host
 
-  # TODO: Deprecate {:system, env_var} once we require Elixir v1.7+
+  # TODO: Deprecate {:system, env_var} once we require Elixir v1.9+
   defp port_to_integer({:system, env_var}), do: port_to_integer(System.get_env(env_var))
   defp port_to_integer(port) when is_binary(port), do: String.to_integer(port)
   defp port_to_integer(port) when is_integer(port), do: port
-
-  def pubsub_server(endpoint) do
-    {:cache, endpoint.config(:pubsub)[:name]}
-  end
 
   @doc """
   Invoked to warm up caches on start and config change.
   """
   def warmup(endpoint) do
-    endpoint.host
+    endpoint.host()
+    endpoint.script_name()
     endpoint.path("/")
-    endpoint.script_name
     warmup_url(endpoint)
     warmup_static(endpoint)
     :ok
@@ -380,31 +417,50 @@ defmodule Phoenix.Endpoint.Supervisor do
   end
 
   defp warmup_url(endpoint) do
-    endpoint.url
-    endpoint.static_url
-    endpoint.struct_url
+    endpoint.url()
+    endpoint.static_url()
+    endpoint.struct_url()
   end
 
   defp warmup_static(endpoint) do
-    for {key, value} <- cache_static_manifest(endpoint) do
-      Phoenix.Config.cache(endpoint, {:__phoenix_static__, "/" <> key}, fn _ ->
-        {:cache, "/" <> value <> "?vsn=d"}
-      end)
-    end
+    warmup_static(endpoint, cache_static_manifest(endpoint))
     endpoint.static_path("/")
   end
 
+  defp warmup_static(endpoint, %{"latest" => latest, "digests" => digests}) do
+    Phoenix.Config.put_new(endpoint, :cache_static_manifest_latest, latest)
+
+    Enum.each(latest, fn {key, _} ->
+      Phoenix.Config.cache(endpoint, {:__phoenix_static__, "/" <> key}, fn _ ->
+        {:cache, static_cache(digests, Map.get(latest, key))}
+      end)
+    end)
+  end
+
+  defp warmup_static(_endpoint, _manifest) do
+    raise ArgumentError, "expected warmup_static/2 to include 'latest' and 'digests' keys in manifest"
+  end
+
+  defp static_cache(digests, value) do
+    {"/#{value}?vsn=d", static_integrity(digests[value]["sha512"])}
+  end
+
+  defp static_integrity(nil), do: nil
+  defp static_integrity(sha), do: "sha512-#{sha}"
+
   defp cache_static_manifest(endpoint) do
     if inner = endpoint.config(:cache_static_manifest) do
-      outer = Application.app_dir(endpoint.config(:otp_app), inner)
+      {app, inner} =
+        case inner do
+          {_, _} = inner -> inner
+          inner when is_binary(inner) -> {endpoint.config(:otp_app), inner}
+          _ -> raise ArgumentError, ":cache_static_manifest must be a binary or a tuple"
+        end
+
+      outer = Application.app_dir(app, inner)
 
       if File.exists?(outer) do
-        manifest =
-          outer
-          |> File.read!()
-          |> Phoenix.json_library().decode!()
-
-        manifest["latest"]
+        outer |> File.read!() |> Phoenix.json_library().decode!()
       else
         Logger.error "Could not find static manifest at #{inspect outer}. " <>
                      "Run \"mix phx.digest\" after building your static files " <>
@@ -415,9 +471,19 @@ defmodule Phoenix.Endpoint.Supervisor do
     end
   end
 
-  defp log_access_info(otp_app, endpoint) do
-    if Phoenix.Endpoint.server?(otp_app, endpoint) do
+  defp log_access_url(otp_app, endpoint, opts) do
+    if Keyword.get(opts, :log_access_url, true) && Phoenix.Endpoint.server?(otp_app, endpoint) do
       Logger.info("Access #{inspect(endpoint)} at #{endpoint.url()}")
     end
+  end
+
+  @doc """
+  List of keys which we ensure are unchanged from compile time to runtime. For
+  example, the :force_ssl option must be available at compile time in order to
+  work properly. We check these keys so we can warn the user that changing the
+  option at runtime may lead to undesirable behavior.
+  """
+  def compile_config_keys do
+    [:force_ssl]
   end
 end

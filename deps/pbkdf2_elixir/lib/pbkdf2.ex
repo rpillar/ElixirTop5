@@ -1,12 +1,23 @@
 defmodule Pbkdf2 do
   @moduledoc """
-  Pbkdf2 password hashing library main module.
+  Elixir wrapper for the Pbkdf2 password hashing function.
 
-  This library can be used on its own, or it can be used together with
-  [Comeonin](https://hexdocs.pm/comeonin/api-reference.html), which
-  provides a higher-level api.
+  For a lower-level API, see `Pbkdf2.Base`.
 
-  For a lower-level API, see Pbkdf2.Base.
+  ## Configuration
+
+  The following parameter can be set in the config file:
+
+    * `:rounds` - computational cost
+      * the number of rounds
+      * `160_000` is the default
+
+  If you are hashing passwords in your tests, it can be useful to add
+  the following to the `config/test.exs` file:
+
+      # Note: Do not use this value in production
+      config :pbkdf2_elixir,
+        rounds: 1
 
   ## Pbkdf2
 
@@ -21,74 +32,130 @@ defmodule Pbkdf2 do
   ## Warning
 
   It is recommended that you set a maximum length for the password
-  when using the `hash_pwd_salt`, `verify_pass` and `Base.hash_password`
-  functions. This maximum length should not prevent valid users from setting
+  when using Pbkdf2. This maximum length should not prevent valid users from setting
   long passwords. It is instead needed to combat denial-of-service attacks.
-  As an example, Django sets the maximum length to 4096 bytes.
+  As an example, Django sets the maximum length to `4096` bytes.
   For more information, see [this link](https://www.djangoproject.com/weblog/2013/sep/15/security/).
   """
 
-  alias Pbkdf2.Base
+  use Comeonin
+
+  alias Pbkdf2.{Base, Tools}
 
   @doc """
-  Generate a random salt.
+  Generates a random salt.
 
-  The minimum length of the salt is 8 bytes and the maximum length is
-  1024. The default length for the salt is 16 bytes. We do not recommend
-  using a salt shorter than the default.
-  """
-  def gen_salt(salt_length \\ 16)
-
-  def gen_salt(salt_length) when salt_length in 8..1024 do
-    :crypto.strong_rand_bytes(salt_length)
-  end
-
-  def gen_salt(_) do
-    raise ArgumentError, """
-    The salt is the wrong length. It should be between 8 and 1024 bytes long.
-    """
-  end
-
-  @doc """
-  Generate a random salt and hash a password using Pbkdf2.
+  This function takes one optional argument - a keyword list (see below
+  for options) or an integer with the salt length (in bytes).
 
   ## Options
 
-  For more information about the options for the underlying hash function,
-  see the documentation for Pbkdf2.Base.hash_password/3.
-
-  This function has the following additional option:
+  The following options are available:
 
     * `:salt_len` - the length of the random salt
-      * the default is 16 (the minimum is 8) bytes
-      * we do not recommend using a salt less than 16 bytes long
+      * the default is 16 bytes
+      * for more information, see the 'Salt length recommendations' section below
+    * `:format` - the length of the random salt
+      * the default is `:modular` (modular crypt format)
+      * the other available options are `:django` and `:hex`
 
+  ## Examples
+
+  Here is an example of generating a salt with the default salt length and format:
+
+      Pbkdf2.gen_salt()
+
+  To generate a different length salt:
+
+      Pbkdf2.gen_salt(salt_len: 32)
+
+  And to generate a salt in Django output format:
+
+      Pbkdf2.gen_salt(format: :django)
+
+  ## Salt length recommendations
+
+  In most cases, 16 bytes is a suitable length for the salt.
+  It is not recommended to use a salt that is shorter than this
+  (see below for details and references).
+
+  According to the [Pbkdf2 standard](https://tools.ietf.org/html/rfc8018),
+  the salt should be at least 8 bytes long, but according to [NIST
+  recommendations](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-132.pdf),
+  the minimum salt length should be 16 bytes.
   """
-  def hash_pwd_salt(password, opts \\ []) do
-    Base.hash_password(password, Keyword.get(opts, :salt_len, 16) |> gen_salt, opts)
+  @spec gen_salt(keyword | integer) :: binary
+  def gen_salt(opts \\ [])
+
+  def gen_salt(salt_len) when is_integer(salt_len) do
+    gen_salt(salt_len: salt_len)
+  end
+
+  def gen_salt(opts) do
+    salt_len = Keyword.get(opts, :salt_len, 16)
+    Tools.check_salt_length(salt_len)
+
+    case opts[:format] do
+      :django -> Tools.get_random_string(salt_len)
+      _ -> :crypto.strong_rand_bytes(salt_len)
+    end
   end
 
   @doc """
-  Check the password by comparing it with the stored hash.
+  Hashes a password with a randomly generated salt.
 
-  The check is performed in constant time to avoid timing attacks.
+  ## Options
+
+  In addition to the options for `gen_salt/1` (`:salt_len` and `:format`),
+  this function also takes options that are then passed on to the
+  `hash_password` function in the `Pbkdf2.Base` module.
+
+  See the documentation for `Pbkdf2.Base.hash_password/3` for further details.
+
+  ## Examples
+
+  The following examples show how to hash a password with a randomly-generated
+  salt and then verify a password:
+
+      iex> hash = Pbkdf2.hash_pwd_salt("password")
+      ...> Pbkdf2.verify_pass("password", hash)
+      true
+
+      iex> hash = Pbkdf2.hash_pwd_salt("password")
+      ...> Pbkdf2.verify_pass("incorrect", hash)
+      false
+
+  The next examples show how to use some of the various available options:
+
+      iex> hash = Pbkdf2.hash_pwd_salt("password", rounds: 100_000)
+      ...> Pbkdf2.verify_pass("password", hash)
+      true
+
+      iex> hash = Pbkdf2.hash_pwd_salt("password", digest: :sha256)
+      ...> Pbkdf2.verify_pass("password", hash)
+      true
+
+      iex> hash = Pbkdf2.hash_pwd_salt("password", digest: :sha256, format: :django)
+      ...> Pbkdf2.verify_pass("password", hash)
+      true
+
   """
+  @impl true
+  def hash_pwd_salt(password, opts \\ []) do
+    Base.hash_password(password, gen_salt(opts), opts)
+  end
+
+  @doc """
+  Verifies a password by hashing the password and comparing the hashed value
+  with a stored hash.
+
+  See the documentation for `hash_pwd_salt/2` for examples of using this function.
+  """
+  @impl true
   def verify_pass(password, stored_hash) do
     [alg, rounds, salt, hash] = String.split(stored_hash, "$", trim: true)
     digest = if alg =~ "sha512", do: :sha512, else: :sha256
     Base.verify_pass(password, hash, salt, digest, rounds, output(stored_hash))
-  end
-
-  @doc """
-  A dummy verify function to help prevent user enumeration.
-
-  This always returns false. The reason for implementing this check is
-  in order to make it more difficult for an attacker to identify users
-  by timing responses.
-  """
-  def no_user_verify(opts \\ []) do
-    hash_pwd_salt("password", opts)
-    false
   end
 
   defp output("$pbkdf2" <> _), do: :modular

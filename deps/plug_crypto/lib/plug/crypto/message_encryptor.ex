@@ -9,19 +9,21 @@ defmodule Plug.Crypto.MessageEncryptor do
   This can be used in situations similar to the `Plug.Crypto.MessageVerifier`,
   but where you don't want users to be able to determine the value of the payload.
 
+  The current algorithm used is AES-GCM-128.
+
   ## Example
 
-      secret_key_base = "072d1e0157c008193fe48a670cce031faa4e..."
-      encrypted_cookie_salt = "encrypted cookie"
-      encrypted_signed_cookie_salt = "signed encrypted cookie"
-
-      secret = KeyGenerator.generate(secret_key_base, encrypted_cookie_salt)
-      sign_secret = KeyGenerator.generate(secret_key_base, encrypted_signed_cookie_salt)
-
-      data = "José"
-      encrypted = MessageEncryptor.encrypt(data, secret, sign_secret)
-      decrypted = MessageEncryptor.decrypt(encrypted, secret, sign_secret)
-      decrypted # => {:ok, "José"}
+      iex> secret_key_base = "072d1e0157c008193fe48a670cce031faa4e..."
+      ...> encrypted_cookie_salt = "encrypted cookie"
+      ...> encrypted_signed_cookie_salt = "signed encrypted cookie"
+      ...>
+      ...> secret = KeyGenerator.generate(secret_key_base, encrypted_cookie_salt)
+      ...> sign_secret = KeyGenerator.generate(secret_key_base, encrypted_signed_cookie_salt)
+      ...>
+      ...> data = "José"
+      ...> encrypted = MessageEncryptor.encrypt(data, secret, sign_secret)
+      ...> MessageEncryptor.decrypt(encrypted, secret, sign_secret)
+      {:ok, "José"}
 
   """
 
@@ -29,20 +31,20 @@ defmodule Plug.Crypto.MessageEncryptor do
   Encrypts a message using authenticated encryption.
   """
   def encrypt(message, secret, sign_secret)
-      when is_binary(message) and is_binary(secret) and is_binary(sign_secret) do
+      when is_binary(message) and byte_size(secret) > 0 and is_binary(sign_secret) do
     aes128_gcm_encrypt(message, secret, sign_secret)
   rescue
-    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(System.stacktrace())
+    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(__STACKTRACE__)
   end
 
   @doc """
   Decrypts a message using authenticated encryption.
   """
   def decrypt(encrypted, secret, sign_secret)
-      when is_binary(encrypted) and is_binary(secret) and is_binary(sign_secret) do
+      when is_binary(encrypted) and byte_size(secret) > 0 and is_binary(sign_secret) do
     aes128_gcm_decrypt(encrypted, secret, sign_secret)
   rescue
-    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(System.stacktrace())
+    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(__STACKTRACE__)
   end
 
   # Encrypts and authenticates a message using AES128-GCM mode.
@@ -102,16 +104,39 @@ defmodule Plug.Crypto.MessageEncryptor do
     end
   end
 
-  defp block_encrypt(algo, key, iv, payload) do
-    :crypto.block_encrypt(algo, key, iv, payload)
-  catch
-    :error, :notsup -> raise_notsup(algo)
-  end
+  # TODO: remove when we require OTP 22
+  if Code.ensure_loaded?(:crypto) and function_exported?(:crypto, :crypto_one_time_aead, 6) do
+    defp block_encrypt(cipher, key, iv, {aad, payload}) do
+      cipher = cipher_alias(cipher, bit_size(key))
+      :crypto.crypto_one_time_aead(cipher, key, iv, payload, aad, true)
+    catch
+      :error, :notsup -> raise_notsup(cipher)
+    end
 
-  defp block_decrypt(algo, key, iv, payload) do
-    :crypto.block_decrypt(algo, key, iv, payload)
-  catch
-    :error, :notsup -> raise_notsup(algo)
+    defp block_decrypt(cipher, key, iv, {aad, payload, tag}) do
+      cipher = cipher_alias(cipher, bit_size(key))
+      :crypto.crypto_one_time_aead(cipher, key, iv, payload, aad, tag, false)
+    catch
+      :error, :notsup -> raise_notsup(cipher)
+    end
+
+    # TODO: remove when we reqwuire OTP 24 (since it has similar alias handling)
+    defp cipher_alias(:aes_gcm, 128), do: :aes_128_gcm
+    defp cipher_alias(:aes_gcm, 192), do: :aes_192_gcm
+    defp cipher_alias(:aes_gcm, 256), do: :aes_256_gcm
+    defp cipher_alias(other, _), do: other
+  else
+    defp block_encrypt(cipher, key, iv, payload) do
+      :crypto.block_encrypt(cipher, key, iv, payload)
+    catch
+      :error, :notsup -> raise_notsup(cipher)
+    end
+
+    defp block_decrypt(cipher, key, iv, payload) do
+      :crypto.block_decrypt(cipher, key, iv, payload)
+    catch
+      :error, :notsup -> raise_notsup(cipher)
+    end
   end
 
   defp raise_notsup(algo) do
@@ -120,7 +145,8 @@ defmodule Plug.Crypto.MessageEncryptor do
   end
 
   # Wraps a decrypted content encryption key (CEK) with secret and
-  # sign_secret using AES GCM mode.
+  # sign_secret using AES GCM mode. Accepts keys of 128, 192, or 
+  # 256 bits based on the length of the secret key.
   #
   # See: https://tools.ietf.org/html/rfc7518#section-4.7
   defp aes_gcm_key_wrap(cek, secret, sign_secret) when bit_size(secret) > 256 do
@@ -136,7 +162,8 @@ defmodule Plug.Crypto.MessageEncryptor do
   end
 
   # Unwraps an encrypted content encryption key (CEK) with secret and
-  # sign_secret using AES GCM mode.
+  # sign_secret using AES GCM mode. Accepts keys of 128, 192, or 256 
+  # bits based on the length of the secret key.
   #
   # See: https://tools.ietf.org/html/rfc7518#section-4.7
   defp aes_gcm_key_unwrap(wrapped_cek, secret, sign_secret) when bit_size(secret) > 256 do

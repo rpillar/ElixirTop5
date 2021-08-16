@@ -521,7 +521,13 @@ defmodule Phoenix.Tracker.Shard do
   end
 
   defp random_ref() do
-    :crypto.strong_rand_bytes(8) |> Base.encode64()
+    binary = <<
+      System.system_time(:nanosecond)::64,
+      :erlang.phash2({node(), self()})::16,
+      :erlang.unique_integer()::16
+    >>
+
+    Base.url_encode64(binary)
   end
 
   defp log(%{log_level: false}, _msg_func), do: :ok

@@ -8,8 +8,8 @@ defmodule Ecto.Adapters.SQL do
   By default, we support the following adapters:
 
     * `Ecto.Adapters.Postgres` for Postgres
-    * `Ecto.Adapters.MyXQL` for MyXQL
-    * `Ecto.Adapters.MySQL` for MySQL (legacy - it will be removed in future versions)
+    * `Ecto.Adapters.MyXQL` for MySQL
+    * `Ecto.Adapters.Tds` for SQLServer
 
   ## Migrations
 
@@ -27,7 +27,7 @@ defmodule Ecto.Adapters.SQL do
     * `mix ecto.migrate` - runs a migration
     * `mix ecto.rollback` - rolls back a previously run migration
 
-  If you want to run migrations programatically, see `Ecto.Migrator`.
+  If you want to run migrations programmatically, see `Ecto.Migrator`.
 
   ## SQL sandbox
 
@@ -59,10 +59,6 @@ defmodule Ecto.Adapters.SQL do
 
     * `:driver` (required) - the database driver library.
       For example: `:postgrex`
-    * `:migration_lock` - the lock to use on migration locks.
-      For example: "FOR UPDATE". It may also be `nil` (for no lock).
-      The user can still override this by setting `:migration_lock`
-      in the repository configuration
 
   """
 
@@ -80,7 +76,6 @@ defmodule Ecto.Adapters.SQL do
       opts = unquote(opts)
       @conn __MODULE__.Connection
       @driver Keyword.fetch!(opts, :driver)
-      @migration_lock Keyword.fetch!(opts, :migration_lock)
 
       @impl true
       defmacro __before_compile__(env) do
@@ -103,16 +98,19 @@ defmodule Ecto.Adapters.SQL do
       end
 
       @impl true
-      def loaders({:embed, _} = type, _), do: [&Ecto.Adapters.SQL.load_embed(type, &1)]
-      def loaders({:map, _} = type, _),   do: [&Ecto.Adapters.SQL.load_embed(type, &1)]
-      def loaders(:binary_id, type),      do: [Ecto.UUID, type]
-      def loaders(_, type),               do: [type]
+      def checked_out?(meta) do
+        Ecto.Adapters.SQL.checked_out?(meta)
+      end
 
       @impl true
-      def dumpers({:embed, _} = type, _), do: [&Ecto.Adapters.SQL.dump_embed(type, &1)]
-      def dumpers({:map, _} = type, _),   do: [&Ecto.Adapters.SQL.dump_embed(type, &1)]
-      def dumpers(:binary_id, type),      do: [type, Ecto.UUID]
-      def dumpers(_, type),               do: [type]
+      def loaders({:map, _}, type),   do: [&Ecto.Type.embedded_load(type, &1, :json)]
+      def loaders(:binary_id, type),  do: [Ecto.UUID, type]
+      def loaders(_, type),           do: [type]
+
+      @impl true
+      def dumpers({:map, _}, type),   do: [&Ecto.Type.embedded_dump(type, &1, :json)]
+      def dumpers(:binary_id, type),  do: [type, Ecto.UUID]
+      def dumpers(_, type),           do: [type]
 
       ## Query
 
@@ -147,15 +145,15 @@ defmodule Ecto.Adapters.SQL do
       def autogenerate(:binary_id), do: Ecto.UUID.bingenerate()
 
       @impl true
-      def insert_all(adapter_meta, schema_meta, header, rows, on_conflict, returning, opts) do
-        Ecto.Adapters.SQL.insert_all(adapter_meta, schema_meta, @conn, header, rows, on_conflict, returning, opts)
+      def insert_all(adapter_meta, schema_meta, header, rows, on_conflict, returning, placeholders, opts) do
+        Ecto.Adapters.SQL.insert_all(adapter_meta, schema_meta, @conn, header, rows, on_conflict, returning, placeholders, opts)
       end
 
       @impl true
       def insert(adapter_meta, %{source: source, prefix: prefix}, params,
                  {kind, conflict_params, _} = on_conflict, returning, opts) do
         {fields, values} = :lists.unzip(params)
-        sql = @conn.insert(prefix, source, fields, [fields], on_conflict, returning)
+        sql = @conn.insert(prefix, source, fields, [fields], on_conflict, returning, [])
         Ecto.Adapters.SQL.struct(adapter_meta, @conn, sql, :insert, source, [], values ++ conflict_params, kind, returning, opts)
       end
 
@@ -198,14 +196,9 @@ defmodule Ecto.Adapters.SQL do
         Ecto.Adapters.SQL.execute_ddl(meta, @conn, definition, opts)
       end
 
-      @impl true
-      def lock_for_migrations(meta, query, opts, fun) do
-        Ecto.Adapters.SQL.lock_for_migrations(meta, query, opts, @migration_lock, fun)
-      end
-
-      defoverridable [prepare: 2, execute: 5, insert: 6, update: 6, delete: 4, insert_all: 7,
+      defoverridable [prepare: 2, execute: 5, insert: 6, update: 6, delete: 4, insert_all: 8,
                       execute_ddl: 3, loaders: 2, dumpers: 2, autogenerate: 1,
-                      ensure_all_started: 2, lock_for_migrations: 4]
+                      ensure_all_started: 2, __before_compile__: 1]
     end
   end
 
@@ -218,10 +211,10 @@ defmodule Ecto.Adapters.SQL do
   The examples below are meant for reference. Each adapter will
   return a different result:
 
-      iex> Ecto.Adapters.SQL.to_sql(:all, repo, Post)
+      iex> Ecto.Adapters.SQL.to_sql(:all, Repo, Post)
       {"SELECT p.id, p.title, p.inserted_at, p.created_at FROM posts as p", []}
 
-      iex> Ecto.Adapters.SQL.to_sql(:update_all, repo,
+      iex> Ecto.Adapters.SQL.to_sql(:update_all, Repo,
                                     from(p in Post, update: [set: [title: ^"hello"]]))
       {"UPDATE posts AS p SET title = $1", ["hello"]}
 
@@ -244,6 +237,88 @@ defmodule Ecto.Adapters.SQL do
       {{:nocache, {_id, prepared}}, params} ->
         {prepared, params}
     end
+  end
+
+  @doc """
+  Executes an EXPLAIN statement or similar for the given query according to its kind and the
+  adapter in the given repository.
+
+  ## Examples
+
+      # Postgres
+      iex> Ecto.Adapters.SQL.explain(Repo, :all, Post)
+      "Seq Scan on posts p0  (cost=0.00..12.12 rows=1 width=443)"
+
+      # MySQL
+      iex> Ecto.Adapters.SQL.explain(Repo, :all, from(p in Post, where: p.title == "title")) |> IO.puts()
+      +----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+-------------+
+      | id | select_type | table | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra       |
+      +----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+-------------+
+      |  1 | SIMPLE      | p0    | NULL       | ALL  | NULL          | NULL | NULL    | NULL |    1 |    100.0 | Using where |
+      +----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+-------------+
+
+      # Shared opts
+      iex> Ecto.Adapters.SQL.explain(Repo, :all, Post, analyze: true, timeout: 20_000)
+      "Seq Scan on posts p0  (cost=0.00..11.70 rows=170 width=443) (actual time=0.013..0.013 rows=0 loops=1)\\nPlanning Time: 0.031 ms\\nExecution Time: 0.021 ms"
+
+  It's safe to execute it for updates and deletes, no data change will be committed:
+
+      iex> Ecto.Adapters.SQL.explain(Repo, :update_all, from(p in Post, update: [set: [title: "new title"]]))
+      "Update on posts p0  (cost=0.00..11.70 rows=170 width=449)\\n  ->  Seq Scan on posts p0  (cost=0.00..11.70 rows=170 width=449)"
+
+  This function is also available under the repository with name `explain`:
+
+      iex> Repo.explain(:all, from(p in Post, where: p.title == "title"))
+      "Seq Scan on posts p0  (cost=0.00..12.12 rows=1 width=443)\\n  Filter: ((title)::text = 'title'::text)"
+
+  ### Options
+
+  Built-in adapters support passing `opts` to the EXPLAIN statement according to the following:
+
+  Adapter          | Supported opts
+  ---------------- | --------------
+  Postgrex         | `analyze`, `verbose`, `costs`, `settings`, `buffers`, `timing`, `summary`
+  MyXQL            | None
+
+  _Postgrex_: Check [PostgreSQL doc](https://www.postgresql.org/docs/current/sql-explain.html) for version compatibility.
+
+  _MyXQL_: `EXTENDED` and `PARTITIONS` opts were [deprecated](https://dev.mysql.com/doc/refman/5.7/en/explain.html) and are enabled by default.
+
+  Also note that:
+
+    * Currently `:map`, `:yaml`, and `:text` format options are supported
+      for PostgreSQL. `:map` is the deserialized JSON encoding. The last two
+      options return the result as a string.
+    * Any other value passed to `opts` will be forwarded to the underlying
+      adapter query function, including Repo shared options such as `:timeout`;
+    * Non built-in adapters may have specific behavior and you should consult
+      their own documentation.
+
+  """
+  @spec explain(pid() | Ecto.Repo.t | Ecto.Adapter.adapter_meta,
+                :all | :update_all | :delete_all,
+                Ecto.Queryable.t, opts :: Keyword.t) :: String.t | Exception.t
+  def explain(repo, operation, queryable, opts \\ [])
+
+  def explain(repo, operation, queryable, opts) when is_atom(repo) or is_pid(repo) do
+    explain(Ecto.Adapter.lookup_meta(repo), operation, queryable, opts)
+  end
+
+  def explain(%{repo: repo} = adapter_meta, operation, queryable, opts) do
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:explain, fn _, _ ->
+      {prepared, prepared_params} = to_sql(operation, repo, queryable)
+      sql_call(adapter_meta, :explain_query, [prepared], prepared_params, opts)
+    end)
+     |> Ecto.Multi.run(:rollback, fn _, _ ->
+       {:error, :forced_rollback}
+     end)
+     |> repo.transaction()
+     |> case do
+       {:error, :rollback, :forced_rollback, %{explain: result}} -> result
+       {:error, :explain, error, _} -> raise error
+       _ -> raise "unable to execute explain"
+     end
   end
 
   @doc """
@@ -323,7 +398,7 @@ defmodule Ecto.Adapters.SQL do
       {:ok, %{rows: [[42]], num_rows: 1}}
 
   """
-  @spec query(Ecto.Repo.t | Ecto.Adapter.adapter_meta, String.t, [term], Keyword.t) ::
+  @spec query(pid() | Ecto.Repo.t | Ecto.Adapter.adapter_meta, String.t, [term], Keyword.t) ::
               {:ok, %{:rows => nil | [[term] | binary],
                       :num_rows => non_neg_integer,
                       optional(atom) => any}}
@@ -354,6 +429,87 @@ defmodule Ecto.Adapters.SQL do
   defp put_source(opts, _) do
     opts
   end
+
+  @doc """
+  Check if the given `table` exists.
+
+  Returns `true` if the `table` exists in the `repo`, otherwise `false`.
+  The table is checked against the current database/schema in the connection.
+  """
+  @spec table_exists?(Ecto.Repo.t, table :: String.t) :: boolean
+  def table_exists?(repo, table) when is_atom(repo) do
+    %{sql: sql} = adapter_meta = Ecto.Adapter.lookup_meta(repo)
+    {query, params} = sql.table_exists_query(table)
+    query!(adapter_meta, query, params, []).num_rows != 0
+  end
+
+
+  @doc """
+  Returns a formatted table for a given query `result`.
+
+
+  ## Examples
+
+      iex> Ecto.Adapters.SQL.format_table(query) |> IO.puts()
+      +---------------+---------+--------+
+      | title         | counter | public |
+      +---------------+---------+--------+
+      | My Post Title |       1 | NULL   |
+      +---------------+---------+--------+
+
+  """
+  @spec format_table(%{columns: [String.t] | nil, rows: [term()] | nil}) :: String.t
+  def format_table(result)
+
+  def format_table(nil), do: ""
+  def format_table(%{columns: nil}), do: ""
+  def format_table(%{columns: []}), do: ""
+  def format_table(%{columns: columns, rows: nil}), do: format_table(%{columns: columns, rows: []})
+
+  def format_table(%{columns: columns, rows: rows}) do
+    column_widths =
+      [columns | rows]
+      |> List.zip()
+      |> Enum.map(&Tuple.to_list/1)
+      |> Enum.map(fn column_with_rows ->
+        column_with_rows |> Enum.map(&binary_length/1) |> Enum.max()
+      end)
+
+    [
+      separator(column_widths),
+      "\n",
+      cells(columns, column_widths),
+      "\n",
+      separator(column_widths),
+      "\n",
+      Enum.map(rows, &cells(&1, column_widths) ++ ["\n"]),
+      separator(column_widths)
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+
+  defp binary_length(nil), do: 4 # NULL
+  defp binary_length(binary) when is_binary(binary), do: String.length(binary)
+  defp binary_length(other), do: other |> inspect() |> String.length()
+
+  defp separator(widths) do
+    Enum.map(widths, & [?+, ?-, String.duplicate("-", &1), ?-]) ++ [?+]
+  end
+
+  defp cells(items, widths) do
+    cell =
+      [items, widths]
+      |> List.zip()
+      |> Enum.map(fn {item, width} -> [?|, " ", format_item(item, width) , " "] end)
+
+    [cell | [?|]]
+  end
+
+  defp format_item(nil, width), do: String.pad_trailing("NULL", width)
+  defp format_item(item, width) when is_binary(item), do: String.pad_trailing(item, width)
+  defp format_item(item, width) when is_number(item), do: item |> inspect() |> String.pad_leading(width)
+  defp format_item(item, width), do: item |> inspect() |> String.pad_trailing(width)
 
   ## Callbacks
 
@@ -390,7 +546,7 @@ defmodule Ecto.Adapters.SQL do
       See `Ecto.Adapters.SQL.query/4` for more information.
       """
       def query(sql, params \\ [], opts \\ []) do
-        Ecto.Adapters.SQL.query(__MODULE__, sql, params, opts)
+        Ecto.Adapters.SQL.query(get_dynamic_repo(), sql, params, opts)
       end
 
       @doc """
@@ -399,7 +555,7 @@ defmodule Ecto.Adapters.SQL do
       See `Ecto.Adapters.SQL.query!/4` for more information.
       """
       def query!(sql, params \\ [], opts \\ []) do
-        Ecto.Adapters.SQL.query!(__MODULE__, sql, params, opts)
+        Ecto.Adapters.SQL.query!(get_dynamic_repo(), sql, params, opts)
       end
 
       @doc """
@@ -408,19 +564,27 @@ defmodule Ecto.Adapters.SQL do
       See `Ecto.Adapters.SQL.to_sql/3` for more information.
       """
       def to_sql(operation, queryable) do
-        Ecto.Adapters.SQL.to_sql(operation, __MODULE__, queryable)
+        Ecto.Adapters.SQL.to_sql(operation, get_dynamic_repo(), queryable)
+      end
+
+      @doc """
+      A convenience function for SQL-based repositories that executes an EXPLAIN statement or similar
+      depending on the adapter to obtain statistics for the given query.
+
+      See `Ecto.Adapters.SQL.explain/4` for more information.
+      """
+      def explain(operation, queryable, opts \\ []) do
+        Ecto.Adapters.SQL.explain(get_dynamic_repo(), operation, queryable, opts)
       end
     end
   end
 
   @doc false
   def ensure_all_started(driver, _config, type) do
-    with {:ok, from_driver} <- Application.ensure_all_started(driver, type),
-         # We always return the adapter to force it to be restarted if necessary
-         do: {:ok, List.delete(from_driver, driver) ++ [driver]}
+    Application.ensure_all_started(driver, type)
   end
 
-  @pool_opts [:timeout, :pool, :pool_size, :migration_lock] ++
+  @pool_opts [:timeout, :pool, :pool_size] ++
                [:queue_target, :queue_interval, :ownership_timeout]
 
   @doc false
@@ -477,41 +641,30 @@ defmodule Ecto.Adapters.SQL do
     checkout_or_transaction(:run, adapter_meta, opts, callback)
   end
 
-  ## Types
-
   @doc false
-  def load_embed(type, value) do
-    Ecto.Type.load(type, value, fn
-      {:embed, _} = type, value ->
-        load_embed(type, value)
-
-      type, value ->
-        case Ecto.Type.cast(type, value) do
-          {:ok, _} = ok -> ok
-          _ -> :error
-        end
-    end)
-  end
-
-  @doc false
-  def dump_embed(type, value) do
-    Ecto.Type.dump(type, value, fn
-      {:embed, _} = type, value -> dump_embed(type, value)
-      _type, value -> {:ok, value}
-    end)
+  def checked_out?(adapter_meta) do
+    %{pid: pool} = adapter_meta
+    get_conn(pool) != nil
   end
 
   ## Query
 
   @doc false
-  def insert_all(adapter_meta, schema_meta, conn, header, rows, on_conflict, returning, opts) do
+  def insert_all(adapter_meta, schema_meta, conn, header, rows, on_conflict, returning, placeholders, opts) do
     %{source: source, prefix: prefix} = schema_meta
     {_, conflict_params, _} = on_conflict
-    {rows, params} = unzip_inserts(header, rows)
-    sql = conn.insert(prefix, source, header, rows, on_conflict, returning)
+    {rows, params} = case rows do
+      {%Ecto.Query{} = query, params} -> {query, Enum.reverse(params)}
+      rows -> unzip_inserts(header, rows)
+    end
 
+    sql = conn.insert(prefix, source, header, rows, on_conflict, returning, placeholders)
+
+    opts = [{:cache_statement, "ecto_insert_all_#{source}"} | opts]
+
+    all_params = placeholders ++ Enum.reverse(params, conflict_params)
     %{num_rows: num, rows: rows} =
-      query!(adapter_meta, sql, Enum.reverse(params) ++ conflict_params, opts)
+      query!(adapter_meta, sql, all_params, opts)
 
     {num, rows}
   end
@@ -521,10 +674,12 @@ defmodule Ecto.Adapters.SQL do
       Enum.map_reduce header, params, fn key, acc ->
         case :lists.keyfind(key, 1, fields) do
           {^key, {%Ecto.Query{} = query, query_params}} ->
-            {{query, length(query_params)}, Enum.reverse(query_params) ++ acc}
+            {{query, length(query_params)}, Enum.reverse(query_params, acc)}
 
-          {^key, value} ->
-            {key, [value | acc]}
+          {^key, {:placeholder, placeholder_index}} ->
+            {{:placeholder, Integer.to_string(placeholder_index)}, acc}
+
+          {^key, value} -> {key, [value | acc]}
 
           false -> {nil, acc}
         end
@@ -610,13 +765,13 @@ defmodule Ecto.Adapters.SQL do
     opts = with_log(telemetry, params, opts ++ default_opts)
 
     case get_conn(pool) do
-      nil  ->
-        raise "cannot reduce stream outside of transaction"
-
-      conn ->
+      %DBConnection{conn_mode: :transaction} = conn ->
         sql
         |> apply(:stream, [conn, statement, params, opts])
         |> Enumerable.reduce(acc, fun)
+
+      _ ->
+        raise "cannot reduce stream outside of transaction"
     end
   end
 
@@ -626,12 +781,13 @@ defmodule Ecto.Adapters.SQL do
     opts = with_log(telemetry, params, opts ++ default_opts)
 
     case get_conn(pool) do
-      nil ->
-        raise "cannot collect into stream outside of transaction"
-      conn ->
+      %DBConnection{conn_mode: :transaction} = conn ->
         sql
         |> apply(:stream, [conn, statement, params, opts])
         |> Collectable.into()
+
+      _ ->
+        raise "cannot collect into stream outside of transaction"
     end
   end
 
@@ -654,7 +810,7 @@ defmodule Ecto.Adapters.SQL do
               source: source, params: params, count: num_rows, operation: operation
 
       {:error, err} ->
-        case conn.to_constraints(err) do
+        case conn.to_constraints(err, source: source) do
           [] -> raise_sql_call_error err
           constraints -> {:invalid, constraints}
         end
@@ -696,26 +852,7 @@ defmodule Ecto.Adapters.SQL do
   end
 
   @doc false
-  def lock_for_migrations(meta, query, opts, migration_lock, fun) do
-    %{opts: adapter_opts} = meta
-
-    if lock = Keyword.get(adapter_opts, :migration_lock, migration_lock) do
-      if Keyword.fetch(adapter_opts, :pool_size) == {:ok, 1} do
-        raise_pool_size_error()
-      end
-
-      {:ok, result} =
-        transaction(meta, opts ++ [log: false, timeout: :infinity], fn ->
-          query |> Map.put(:lock, lock) |> fun.()
-        end)
-
-      result
-    else
-      fun.(query)
-    end
-  end
-
-  defp raise_pool_size_error do
+  def raise_migration_pool_size_error do
     raise Ecto.MigrationError, """
     Migrations failed to run because the connection pool size is less than 2.
 
@@ -748,6 +885,7 @@ defmodule Ecto.Adapters.SQL do
       connection_time: query_time,
       decode_time: decode_time,
       pool_time: queue_time,
+      idle_time: idle_time,
       result: result,
       query: query
     } = entry
@@ -761,11 +899,14 @@ defmodule Ecto.Adapters.SQL do
         value -> value
       end)
 
+    acc =
+      if idle_time, do: [idle_time: idle_time], else: []
+
     measurements =
       log_measurements(
         [query_time: query_time, decode_time: decode_time, queue_time: queue_time],
         0,
-        []
+        acc
       )
 
     metadata = %{
@@ -774,7 +915,8 @@ defmodule Ecto.Adapters.SQL do
       result: log_result(result),
       params: params,
       query: query_string,
-      source: source
+      source: source,
+      options: Keyword.get(opts, :telemetry_options, [])
     }
 
     if event_name = Keyword.get(opts, :telemetry_event, event_name) do
@@ -831,6 +973,7 @@ defmodule Ecto.Adapters.SQL do
       log_time("db", measurements, :query_time, true),
       log_time("decode", measurements, :decode_time, false),
       log_time("queue", measurements, :queue_time, false),
+      log_time("idle", measurements, :idle_time, true),
       ?\n,
       query,
       ?\s,

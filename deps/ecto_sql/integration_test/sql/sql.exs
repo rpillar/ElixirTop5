@@ -27,6 +27,11 @@ defmodule Ecto.Integration.SQLTest do
     assert result.rows == [[[text1, text2]]]
   end
 
+  test "query!/4 with dynamic repo" do
+    TestRepo.put_dynamic_repo(:unknown)
+    assert_raise RuntimeError, ~r/:unknown/, fn -> TestRepo.query!("SELECT 1") end
+  end
+
   test "query!/4" do
     result = TestRepo.query!("SELECT 1")
     assert result.rows == [[1]]
@@ -72,7 +77,7 @@ defmodule Ecto.Integration.SQLTest do
 
   test "Repo.update! escape" do
     p = TestRepo.insert!(%Post{title: "hello"})
-    TestRepo.update!(Ecto.Changeset.change p, title: "'")
+    TestRepo.update!(Ecto.Changeset.change(p, title: "'"))
 
     query = from(p in Post, select: p.title)
     assert ["'"] == TestRepo.all(query)
@@ -113,5 +118,37 @@ defmodule Ecto.Integration.SQLTest do
     result = Ecto.Adapters.SQL.query!(TestRepo, "SELECT * FROM posts", [])
     posts = Enum.map(result.rows, &TestRepo.load(Post, {result.columns, &1}))
     assert [%Post{title: "title1", inserted_at: ^inserted_at, public: false}] = posts
+  end
+
+  test "returns true when table exists" do
+    assert Ecto.Adapters.SQL.table_exists?(TestRepo, "posts")
+  end
+
+  test "returns false table doesn't exists" do
+    refute Ecto.Adapters.SQL.table_exists?(TestRepo, "unknown")
+  end
+
+  test "returns result as a formatted table" do
+    TestRepo.insert_all(Post, [%{title: "my post title", counter: 1, public: nil}])
+
+    # resolve correct query for each adapter
+    query = from(p in Post, select: [p.title, p.counter, p.public])
+    {query, _} = Ecto.Adapters.SQL.to_sql(:all, TestRepo, query)
+
+    table =
+      query
+      |> TestRepo.query!()
+      |> Ecto.Adapters.SQL.format_table()
+
+    assert table == "+---------------+---------+--------+\n| title         | counter | public |\n+---------------+---------+--------+\n| my post title |       1 | NULL   |\n+---------------+---------+--------+"
+  end
+
+  test "format_table edge cases" do
+    assert Ecto.Adapters.SQL.format_table(nil) == ""
+    assert Ecto.Adapters.SQL.format_table(%{columns: nil, rows: nil}) == ""
+    assert Ecto.Adapters.SQL.format_table(%{columns: [], rows: []}) == ""
+    assert Ecto.Adapters.SQL.format_table(%{columns: [], rows: [["test"]]}) == ""
+    assert Ecto.Adapters.SQL.format_table(%{columns: ["test"], rows: []}) == "+------+\n| test |\n+------+\n+------+"
+    assert Ecto.Adapters.SQL.format_table(%{columns: ["test"], rows: nil}) == "+------+\n| test |\n+------+\n+------+"
   end
 end

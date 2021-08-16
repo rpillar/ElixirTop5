@@ -19,7 +19,7 @@ in `mix.exs`:
 
 ```elixir
 def deps do
-  [{:jason, "~> 1.1"}]
+  [{:jason, "~> 1.2"}]
 end
 ```
 
@@ -39,56 +39,18 @@ Full documentation can be found at [https://hexdocs.pm/jason](https://hexdocs.pm
 
 ### Postgrex
 
-You need to define a custom "types" module in an `.ex` file, somewhere in `lib`:
+Versions starting at 0.14.0 use `Jason` by default. For earlier versions, please refer to
+[previous versions of this document](https://github.com/michalmuskala/jason/tree/v1.1.2#postgrex).
 
-```elixir
-Postgrex.Types.define(MyApp.PostgresTypes, [], json: Jason)
-
-## If using with ecto, you also need to pass ecto default extensions:
-
-Postgrex.Types.define(MyApp.PostgresTypes, [] ++ Ecto.Adapters.Postgres.extensions(), json: Jason)
-```
-
-Then you can use the module, by passing it to `Postgrex.start_link`.
 ### Ecto
 
-To replicate fully the current behaviour of `Poison` when used in Ecto applications,
-you need to configure `Jason` to be the default encoder in `config/config.exs`:
-
-```elixir
-config :ecto, json_library: Jason
-```
-
-Additionally, when using PostgreSQL, you need to define a custom types module as described
-above, and configure your repo to use it (in either `config/config.exs` or `config/<env>.exs`):
-
-```elixir
-config :my_app, MyApp.Repo, types: MyApp.PostgresTypes
-```
+Versions starting at 3.0.0 use `Jason` by default. For earlier versions, please refer to
+[previous versions of this document](https://github.com/michalmuskala/jason/tree/v1.1.2#ecto).
 
 ### Plug (and Phoenix)
 
-First, you need to configure `Plug.Parsers` to use `Jason` for parsing JSON. You need to find,
-where you're plugging the `Plug.Parsers` plug (in case of Phoenix, it will be in the
-Endpoint module) and configure it in your endpoint module (`lib/app_web/endpoint.ex`),
-for example:
-
-```elixir
-plug Plug.Parsers,
-  parsers: [:urlencoded, :multipart, :json],
-  pass: ["*/*"],
-  json_decoder: Jason
-```
-
-Additionally, for Phoenix, you need to configure the "encoder" in `config/config.exs`:
-
-```elixir
-config :phoenix, :format_encoders,
-  json: Jason
-```
-
-A custom JSON encoder for Phoenix channels is unfortunately a bit more involved,
-you can find code for a custom serializer and how to use it [in here](https://gist.github.com/michalmuskala/d5fabcd26be2befdfb72b72e0b0f2797).
+Phoenix starting at 1.4.0 uses `Jason` by default. For earlier versions, please refer to
+[previous versions of this document](https://github.com/michalmuskala/jason/tree/v1.1.2#plug-and-phoenix).
 
 ### Absinthe
 
@@ -116,8 +78,8 @@ http://michal.muskala.eu/jason/decode.html and http://michal.muskala.eu/jason/en
 
 ### Running
 
-Benchmarks against most popular Elixir & Erlang json libraries can be executed
-with `mix bench.encode` and `mix bench.decode`.
+Benchmarks against most popular Elixir & Erlang json libraries can be executed after
+going into the `bench/` folder and then executing `mix bench.encode` and `mix bench.decode`.
 A HTML report of the benchmarks (after their execution) can be found in
 `bench/output/encode.html` and `bench/output/decode.html` respectively.
 
@@ -173,7 +135,7 @@ Protocol.derive(Jason.Encoder, NameOfTheStruct)
 
 ## License
 
-Jason is released under the Apache 2.0 License - see the [LICENSE](LICENSE) file.
+Jason is released under the Apache License 2.0 - see the [LICENSE](LICENSE) file.
 
 Some elements of tests and benchmarks have their origins in the
 [Poison library](https://github.com/devinus/poison) and were initially licensed under [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/).

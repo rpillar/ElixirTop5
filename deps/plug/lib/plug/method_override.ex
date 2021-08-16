@@ -23,8 +23,10 @@ defmodule Plug.MethodOverride do
 
   @allowed_methods ~w(DELETE PUT PATCH)
 
+  @impl true
   def init([]), do: []
 
+  @impl true
   def call(%Plug.Conn{method: "POST", body_params: body_params} = conn, []),
     do: override_method(conn, body_params)
 
@@ -37,7 +39,7 @@ defmodule Plug.MethodOverride do
   end
 
   defp override_method(conn, body_params) do
-    method = String.upcase(body_params["_method"] || "")
+    method = String.upcase(body_params["_method"] || "", :ascii)
 
     if method in @allowed_methods do
       %{conn | method: method}

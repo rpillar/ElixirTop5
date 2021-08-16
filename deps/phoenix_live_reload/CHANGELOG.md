@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.3.3 (2021-07-06)
+
+* Improvements
+  * Do not attempt to fetch source map for phoenix.js
+
+## 1.3.2 (2021-06-21)
+
+* Improvements
+  * Allow reload `:target_window` to be configured
+
+## 1.3.1 (2021-04-12)
+
+* Bug fixes
+  * Use width=0 and height=0 on iframe
+
+## 1.3.0 (2020-11-03)
+
+This release requires Elixir v1.6+.
+
+* Enhancements
+  * Use `hidden` attribute instead of `style="display: none"`
+  * Fix warnings on Elixir v1.11
+
+* Deprecations
+  * `:iframe_class` is deprecated in favor of `:iframe_attrs`
+
+## 1.2.4 (2020-06-10)
+
+* Bug fixes
+  * Fix a bug related to improper live reload interval
+
+## 1.2.3 (2020-06-10)
+
+* Enhancements
+  * Support the iframe_class option for live reload
+
+## 1.2.2 (2020-05-13)
+
+* Enhancements
+  * Support the suffix option
+
+## 1.2.1 (2019-05-24)
+
+* Enhancements
+  * Allow custom file_system backend options
+
 ## 1.2.0 (2018-11-07)
 
 * Enhancements

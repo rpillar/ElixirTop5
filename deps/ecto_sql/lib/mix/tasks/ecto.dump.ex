@@ -45,7 +45,7 @@ defmodule Mix.Tasks.Ecto.Dump do
     * `-d`, `--dump-path` - the path of the dump file to create
     * `-q`, `--quiet` - run the command quietly
     * `--no-compile` - does not compile applications before dumping
-    * `--no-deps-check` - does not check depedendencies before dumping
+    * `--no-deps-check` - does not check dependencies before dumping
   """
 
   @impl true
@@ -55,19 +55,24 @@ defmodule Mix.Tasks.Ecto.Dump do
 
     Enum.each parse_repo(args), fn repo ->
       ensure_repo(repo, args)
-      ensure_implements(repo.__adapter__, Ecto.Adapter.Structure,
-                                          "dump structure for #{inspect repo}")
-      config = Keyword.merge(repo.config, opts)
+      ensure_implements(repo.__adapter__(), Ecto.Adapter.Structure,
+                                            "dump structure for #{inspect repo}")
 
-      case repo.__adapter__.structure_dump(source_repo_priv(repo), config) do
-        {:ok, location} ->
-          unless opts[:quiet] do
-            Mix.shell.info "The structure for #{inspect repo} has been dumped to #{location}"
-          end
-        {:error, term} when is_binary(term) ->
-          Mix.raise "The structure for #{inspect repo} couldn't be dumped: #{term}"
-        {:error, term} ->
-          Mix.raise "The structure for #{inspect repo} couldn't be dumped: #{inspect term}"
+      migration_repo = repo.config()[:migration_repo] || repo
+
+      for repo <- Enum.uniq([repo, migration_repo]) do
+        config = Keyword.merge(repo.config(), opts)
+
+        case repo.__adapter__().structure_dump(source_repo_priv(repo), config) do
+          {:ok, location} ->
+            unless opts[:quiet] do
+              Mix.shell().info "The structure for #{inspect repo} has been dumped to #{location}"
+            end
+          {:error, term} when is_binary(term) ->
+            Mix.raise "The structure for #{inspect repo} couldn't be dumped: #{term}"
+          {:error, term} ->
+            Mix.raise "The structure for #{inspect repo} couldn't be dumped: #{inspect term}"
+        end
       end
     end
   end

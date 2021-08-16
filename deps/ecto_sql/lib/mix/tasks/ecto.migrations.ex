@@ -5,6 +5,17 @@ defmodule Mix.Tasks.Ecto.Migrations do
 
   @shortdoc "Displays the repository migration status"
 
+  @aliases [
+    r: :repo
+  ]
+
+  @switches [
+    repo: [:keep, :string],
+    no_compile: :boolean,
+    no_deps_check: :boolean,
+    migrations_path: :keep
+  ]
+
   @moduledoc """
   Displays the up / down migration status for the given repository.
 
@@ -27,36 +38,50 @@ defmodule Mix.Tasks.Ecto.Migrations do
   ## Command line options
 
     * `-r`, `--repo` - the repo to obtain the status for
-    * `--no-compile` - does not compile applications before running
-    * `--no-deps-check` - does not check depedendencies before running
 
+    * `--no-compile` - does not compile applications before running
+
+    * `--no-deps-check` - does not check dependencies before running
+
+    * `--migrations-path` - the path to load the migrations from, defaults to
+      `"priv/repo/migrations"`. This option may be given multiple times in which case the migrations
+      are loaded from all the given directories and sorted as if they were in the same one.
+
+      Note, if you have previously run migrations from e.g. paths `a/` and `b/`, and now run `mix
+      ecto.migrations --migrations-path a/` (omitting path `b/`), the migrations from the path
+      `b/` will be shown in the output as `** FILE NOT FOUND **`.
   """
 
   @impl true
   def run(args, migrations \\ &Ecto.Migrator.migrations/2, puts \\ &IO.puts/1) do
     repos = parse_repo(args)
+    {opts, _} = OptionParser.parse! args, strict: @switches, aliases: @aliases
 
-    result =
-      Enum.map(repos, fn repo ->
-        ensure_repo(repo, args)
-        path = ensure_migrations_path(repo)
-        {:ok, pid, _} = ensure_started(repo, all: true)
-        repo_status = migrations.(repo, path)
-        pid && repo.stop()
+    for repo <- repos do
+      ensure_repo(repo, args)
+      paths = ensure_migrations_paths(repo, opts)
 
-        """
+      case Ecto.Migrator.with_repo(repo, &migrations.(&1, paths), [mode: :temporary]) do
+        {:ok, repo_status, _} ->
+          puts.(
+            """
 
-        Repo: #{inspect(repo)}
+            Repo: #{inspect(repo)}
 
-          Status    Migration ID    Migration Name
-        --------------------------------------------------
-        """ <>
-          Enum.map_join(repo_status, "\n", fn {status, number, description} ->
-            "  #{format(status, 10)}#{format(number, 16)}#{description}"
-          end) <> "\n"
-      end)
+              Status    Migration ID    Migration Name
+            --------------------------------------------------
+            """ <>
+              Enum.map_join(repo_status, "\n", fn {status, number, description} ->
+                "  #{format(status, 10)}#{format(number, 16)}#{description}"
+              end) <> "\n"
+          )
 
-    puts.(Enum.join(result, "\n"))
+        {:error, error} ->
+          Mix.raise "Could not start repo #{inspect repo}, error: #{inspect error}"
+      end
+    end
+
+    :ok
   end
 
   defp format(content, pad) do

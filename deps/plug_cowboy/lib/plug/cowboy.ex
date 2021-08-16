@@ -4,10 +4,16 @@ defmodule Plug.Cowboy do
 
   ## Options
 
+    * `:net` - If using `:inet` (IPv4 only - the default) or `:inet6` (IPv6)
+
     * `:ip` - the ip to bind the server to.
       Must be either a tuple in the format `{a, b, c, d}` with each value in `0..255` for IPv4,
       or a tuple in the format `{a, b, c, d, e, f, g, h}` with each value in `0..65535` for IPv6,
       or a tuple in the format `{:local, path}` for a unix socket at the given `path`.
+      If you set an IPv6, the `:net` option will be automatically set to `:inet6`.
+      If both `:net` and `:ip` options are given, make sure they are compatible
+      (i.e. give a IPv4 for `:inet` and IPv6 for `:inet6`).
+      Also, see "Loopback vs Public IP Addresses".
 
     * `:port` - the port to run the server.
       Defaults to 4000 (http) and 4040 (https).
@@ -19,27 +25,106 @@ defmodule Plug.Cowboy do
 
     * `:ref` - the reference name to be used.
       Defaults to `plug.HTTP` (http) and `plug.HTTPS` (https).
+      Note, the default reference name does not contain the port so in order
+      to serve the same plug on multiple ports you need to set the `:ref` accordingly,
+      e.g.: `ref: MyPlug_HTTP_4000`, `ref: MyPlug_HTTP_4001`, etc.
       This is the value that needs to be given on shutdown.
 
     * `:compress` - Cowboy will attempt to compress the response body.
       Defaults to false.
 
-    * `:timeout` - Time in ms with no requests before Cowboy closes the connection.
-      Defaults to 5000ms.
+    * `:stream_handlers` - List of Cowboy `stream_handlers`,
+      see [Cowboy docs](https://ninenines.eu/docs/en/cowboy/2.5/manual/cowboy_http/).
 
     * `:protocol_options` - Specifies remaining protocol options,
       see [Cowboy docs](https://ninenines.eu/docs/en/cowboy/2.5/manual/cowboy_http/).
 
     * `:transport_options` - A keyword list specifying transport options,
-        see [ranch docs](https://ninenines.eu/docs/en/ranch/1.6/manual/ranch/).
-        By default `:num_acceptors` will be set to `100` and `:max_connections`
-        to `16_384`.
+      see [Ranch docs](https://ninenines.eu/docs/en/ranch/1.7/manual/ranch/).
+      By default `:num_acceptors` will be set to `100` and `:max_connections`
+      to `16_384`.
 
-  All other options are given as `:socket_opts` to the underlying transport.
-  When running on HTTPS, any SSL configuration should be given directly to the
-  adapter. See `https/3` for an example and read `Plug.SSL.configure/1` to
-  understand about our SSL defaults. When using a unix socket, OTP 21+ is
-  required for `Plug.Static` and `Plug.Conn.send_file/3` to behave correctly.
+  All other options given at the top level must configure the underlying
+  socket. For HTTP connections, those options are listed under
+  [`ranch_tcp`](https://ninenines.eu/docs/en/ranch/1.7/manual/ranch_tcp/).
+  For example, you can set `:ipv6_v6only` to true if you want to bind only
+  on IPv6 addresses.
+
+  For HTTPS (SSL) connections, those options are described in
+  [`ranch_ssl`](https://ninenines.eu/docs/en/ranch/1.7/manual/ranch_ssl/).
+  See `https/3` for an example and read `Plug.SSL.configure/1` to
+  understand about our SSL defaults.
+
+  When using a Unix socket, OTP 21+ is required for `Plug.Static` and
+  `Plug.Conn.send_file/3` to behave correctly.
+
+  ## Safety limits
+
+  Cowboy sets different limits on URL size, header length, number of
+  headers and so on to protect your application from attacks. For example,
+  the request line length defaults to 10k, which means Cowboy will return
+  414 if a larger URL is given. You can change this under `:protocol_options`:
+
+      protocol_options: [max_request_line_length: 50_000]
+
+  Keep in mind though increasing those limits can pose a security risk.
+  Other times, browsers and proxies along the way may have equally strict
+  limits, which means the request will still fail or the URL will be
+  pruned. You can [consult all limits here](https://ninenines.eu/docs/en/cowboy/2.5/manual/cowboy_http/).
+
+  ## Loopback vs Public IP Addresses
+
+  Should your application bind to a loopback address, such as `::1` (IPv6) or
+  `127.0.0.1` (IPv4), or a public one, such as `::0` (IPv6) or `0.0.0.0`
+  (IPv4)? It depends on how (and whether) you want it to be reachable from
+  other machines.
+
+  Loopback addresses are only reachable from the same host (`localhost` is
+  usually configured to resolve to a loopback address). You may wish to use one if:
+
+  - Your app is running in a development environment (such as your laptop) and
+  you don't want others on the same network to access it.
+  - Your app is running in production, but behind a reverse proxy. For example,
+  you might have Nginx bound to a public address and serving HTTPS, but
+  forwarding the traffic to your application running on the same host. In that
+  case, having your app bind to the loopback address means that Nginx can reach
+  it, but outside traffic can only reach it via Nginx.
+
+  Public addresses are reachable from other hosts. You may wish to use one if:
+
+  - Your app is running in a container. In this case, its loopback address is
+  reachable only from within the container; to be accessible from outside the
+  container, it needs to bind to a public IP address.
+  - Your app is running in production without a reverse proxy, using Cowboy's
+  SSL support.
+
+  ## Logging
+
+  You can configure which exceptions are logged via `:log_exceptions_with_status_code`
+  application environment variable. If the status code returned by `Plug.Exception.status/1`
+  for the exception falls into any of the configured ranges, the exception is logged.
+  By default it's set to `[500..599]`.
+
+      config :plug_cowboy,
+        log_exceptions_with_status_code: [400..599]
+
+  ## Instrumentation
+
+  Plug.Cowboy uses the `:telemetry` library for instrumentation. The following
+  span events are published during each request:
+
+    * `[:cowboy, :request, :start]` - dispatched at the beginning of the request
+    * `[:cowboy, :request, :stop]` - dispatched at the end of the request
+    * `[:cowboy, :request, :exception]` - dispatched at the end of a request that exits
+
+  A single event is published when the request ends with an early error:
+    * `[:cowboy, :request, :early_error]` - dispatched for requests terminated early by Cowboy
+
+  See [`cowboy_telemetry`](https://github.com/beam-telemetry/cowboy_telemetry#telemetry-events)
+  for more details on the events.
+
+  To opt-out of this default instrumentation, you can manually configure
+  cowboy with the option `stream_handlers: [:cowboy_stream_h]`.
   """
 
   require Logger
@@ -56,7 +141,6 @@ defmodule Plug.Cowboy do
     {cowboy_options, non_keyword_options} = Enum.split_with(cowboy_options, &match?({_, _}, &1))
 
     cowboy_options
-    |> set_compress()
     |> normalize_cowboy_options(scheme)
     |> to_args(scheme, plug, plug_opts, non_keyword_options)
   end
@@ -83,8 +167,8 @@ defmodule Plug.Cowboy do
   Runs cowboy under https.
 
   Besides the options described in the module documentation,
-  this modules sets defaults and accepts all options defined
-  in `Plug.SSL.configure/2`.
+  this function sets defaults and accepts all options defined
+  in `Plug.SSL.configure/1`.
 
   ## Example
 
@@ -115,28 +199,14 @@ defmodule Plug.Cowboy do
     :cowboy.stop_listener(ref)
   end
 
-  @transport_options [
-    :connection_type,
-    :handshake_timeout,
-    :max_connections,
-    :logger,
-    :num_acceptors,
-    :shutdown,
-    :socket,
-    :socket_opts,
-
-    # Special cases supported by plug but not ranch
-    :acceptors
-  ]
-
   @doc """
-  A function for starting a Cowboy2 server under Elixir v1.5 supervisors.
+  A function for starting a Cowboy2 server under Elixir v1.5+ supervisors.
 
-  It expects three options:
+  It supports all options as specified in the module documentation plus it
+  requires the follow two options:
 
     * `:scheme` - either `:http` or `:https`
-    * `:plug` - such as MyPlug or {MyPlug, plug_opts}
-    * `:options` - the server options as specified in the module documentation
+    * `:plug` - such as `MyPlug` or `{MyPlug, plug_opts}`
 
   ## Examples
 
@@ -152,13 +222,18 @@ defmodule Plug.Cowboy do
   """
   def child_spec(opts) do
     scheme = Keyword.fetch!(opts, :scheme)
-    cowboy_opts = Keyword.get(opts, :options, [])
 
     {plug, plug_opts} =
       case Keyword.fetch!(opts, :plug) do
         {_, _} = tuple -> tuple
         plug -> {plug, []}
       end
+
+    # We support :options for backwards compatibility.
+    cowboy_opts =
+      opts
+      |> Keyword.drop([:scheme, :plug, :options])
+      |> Kernel.++(Keyword.get(opts, :options, []))
 
     cowboy_args = args(scheme, plug, plug_opts, cowboy_opts)
     [ref, transport_opts, proto_opts] = cowboy_args
@@ -179,15 +254,25 @@ defmodule Plug.Cowboy do
           {:ranch_ssl, :cowboy_tls, %{transport_opts | socket_opts: socket_opts}}
       end
 
-    {id, start, restart, shutdown, type, modules} =
-      :ranch.child_spec(ref, ranch_module, transport_opts, cowboy_protocol, proto_opts)
+    case :ranch.child_spec(ref, ranch_module, transport_opts, cowboy_protocol, proto_opts) do
+      {id, start, restart, shutdown, type, modules} ->
+        %{
+          id: id,
+          start: start,
+          restart: restart,
+          shutdown: shutdown,
+          type: type,
+          modules: modules
+        }
 
-    %{id: id, start: start, restart: restart, shutdown: shutdown, type: type, modules: modules}
+      child_spec when is_map(child_spec) ->
+        child_spec
+    end
   end
 
   ## Helpers
 
-  @protocol_options [:timeout, :compress, :stream_handlers]
+  @protocol_options [:compress, :stream_handlers]
 
   defp run(scheme, plug, opts, cowboy_options) do
     case Application.ensure_all_started(:cowboy) do
@@ -205,28 +290,14 @@ defmodule Plug.Cowboy do
         other -> :erlang.error({:badarg, [other]})
       end
 
+    :telemetry.attach(
+      :plug_cowboy,
+      [:cowboy, :request, :early_error],
+      &handle_event/4,
+      nil
+    )
+
     apply(:cowboy, start, args(scheme, plug, opts, cowboy_options))
-  end
-
-  @default_stream_handlers [Plug.Cowboy.Stream]
-
-  defp set_compress(cowboy_options) do
-    compress = Keyword.get(cowboy_options, :compress)
-    stream_handlers = Keyword.get(cowboy_options, :stream_handlers)
-
-    case {compress, stream_handlers} do
-      {true, nil} ->
-        Keyword.put_new(cowboy_options, :stream_handlers, [
-          :cowboy_compress_h | @default_stream_handlers
-        ])
-
-      {true, _} ->
-        raise "cannot set both compress and stream_handlers at once. " <>
-                "If you wish to set compress, please add `:cowboy_compress_h` to your stream handlers."
-
-      _ ->
-        cowboy_options
-    end
   end
 
   defp normalize_cowboy_options(cowboy_options, :http) do
@@ -244,6 +315,12 @@ defmodule Plug.Cowboy do
   end
 
   defp to_args(opts, scheme, plug, plug_opts, non_keyword_opts) do
+    {timeout, opts} = Keyword.pop(opts, :timeout)
+
+    if timeout do
+      Logger.warn("the :timeout option for Cowboy webserver has no effect and must be removed")
+    end
+
     opts = Keyword.delete(opts, :otp_app)
     {ref, opts} = Keyword.pop(opts, :ref)
     {dispatch, opts} = Keyword.pop(opts, :dispatch)
@@ -252,27 +329,18 @@ defmodule Plug.Cowboy do
     dispatch = :cowboy_router.compile(dispatch || dispatch_for(plug, plug_opts))
     {extra_options, opts} = Keyword.split(opts, @protocol_options)
 
-    extra_options = Keyword.put_new(extra_options, :stream_handlers, @default_stream_handlers)
+    extra_options = set_stream_handlers(extra_options)
     protocol_and_extra_options = :maps.from_list(protocol_options ++ extra_options)
     protocol_options = Map.merge(%{env: %{dispatch: dispatch}}, protocol_and_extra_options)
     {transport_options, socket_options} = Keyword.pop(opts, :transport_options, [])
 
-    option_keys = Keyword.keys(socket_options)
-
-    for opt <- @transport_options, opt in option_keys do
-      option_deprecation_warning(opt)
-    end
-
-    {num_acceptors, socket_options} = Keyword.pop(socket_options, :num_acceptors, 100)
-    {num_acceptors, socket_options} = Keyword.pop(socket_options, :acceptors, num_acceptors)
-    {max_connections, socket_options} = Keyword.pop(socket_options, :max_connections, 16_384)
-
-    socket_options = non_keyword_opts ++ socket_options
+    {net, socket_options} = Keyword.pop(socket_options, :net)
+    socket_options = List.wrap(net) ++ non_keyword_opts ++ socket_options
 
     transport_options =
       transport_options
-      |> Keyword.put_new(:num_acceptors, num_acceptors)
-      |> Keyword.put_new(:max_connections, max_connections)
+      |> Keyword.put_new(:num_acceptors, 100)
+      |> Keyword.put_new(:max_connections, 16_384)
       |> Keyword.update(
         :socket_opts,
         socket_options,
@@ -281,6 +349,28 @@ defmodule Plug.Cowboy do
       |> Map.new()
 
     [ref || build_ref(plug, scheme), transport_options, protocol_options]
+  end
+
+  @default_stream_handlers [:cowboy_telemetry_h, :cowboy_stream_h]
+
+  defp set_stream_handlers(opts) do
+    compress = Keyword.get(opts, :compress)
+    stream_handlers = Keyword.get(opts, :stream_handlers)
+
+    case {compress, stream_handlers} do
+      {true, nil} ->
+        Keyword.put_new(opts, :stream_handlers, [:cowboy_compress_h | @default_stream_handlers])
+
+      {true, _} ->
+        raise "cannot set both compress and stream_handlers at once. " <>
+                "If you wish to set compress, please add `:cowboy_compress_h` to your stream handlers."
+
+      {_, nil} ->
+        Keyword.put_new(opts, :stream_handlers, @default_stream_handlers)
+
+      {_, _} ->
+        opts
+    end
   end
 
   defp build_ref(plug, scheme) do
@@ -296,17 +386,44 @@ defmodule Plug.Cowboy do
     raise ArgumentError, "could not start Cowboy2 adapter, " <> message
   end
 
-  defp option_deprecation_warning(:acceptors),
-    do: option_deprecation_warning(:acceptors, :num_acceptors)
+  def handle_event(
+        [:cowboy, :request, :early_error],
+        _,
+        %{reason: {:connection_error, :limit_reached, specific_reason}, partial_req: partial_req},
+        _
+      ) do
+    Logger.error("""
+    Cowboy returned 431 because it was unable to parse the request headers.
 
-  defp option_deprecation_warning(option),
-    do: option_deprecation_warning(option, option)
+    This may happen because there are no headers, or there are too many headers
+    or the header name or value are too large (such as a large cookie).
 
-  defp option_deprecation_warning(option, expected_option) do
-    warning =
-      "using :#{option} in options is deprecated. Please pass " <>
-        ":#{expected_option} to the :transport_options keyword list instead"
+    More specific reason is:
 
-    IO.warn(warning)
+        #{inspect(specific_reason)}
+
+    You can customize those limits when configuring your http/https
+    server. The configuration option and default values are shown below:
+
+        protocol_options: [
+          max_header_name_length: 64,
+          max_header_value_length: 4096,
+          max_headers: 100
+        ]
+
+    Request info:
+
+        peer: #{format_peer(partial_req.peer)}
+        method: #{partial_req.method || "<unable to parse>"}
+        path: #{partial_req.path || "<unable to parse>"}
+    """)
+  end
+
+  def handle_event(_, _, _, _) do
+    :ok
+  end
+
+  defp format_peer({addr, port}) do
+    "#{:inet_parse.ntoa(addr)}:#{port}"
   end
 end

@@ -28,10 +28,9 @@ defmodule DBConnection.Holder do
   @spec update(pid, reference, module, term) :: {:ok, t} | :error
   def update(pool, ref, mod, state) do
     holder = new(pool, ref, mod, state)
-    now = System.monotonic_time(@time_unit)
 
     try do
-      :ets.give_away(holder, pool, {:checkin, ref, now})
+      :ets.give_away(holder, pool, {:checkin, ref, System.monotonic_time()})
       {:ok, holder}
     rescue
       ArgumentError -> :error
@@ -47,25 +46,50 @@ defmodule DBConnection.Holder do
 
   ## Pool API (invoked by caller)
 
-  @callback checkout(pool :: GenServer.server(), opts :: Keyword.t()) ::
+  @callback checkout(pool :: GenServer.server(), [pid], opts :: Keyword.t()) ::
               {:ok, pool_ref :: any, module, state :: any} | {:error, Exception.t()}
-  def checkout(pool, opts) do
-    caller = Keyword.get(opts, :caller, self())
-    callers = [caller | Process.get(:"$callers") || []]
-
+  def checkout(pool, callers, opts) do
     queue? = Keyword.get(opts, :queue, @queue)
     now = System.monotonic_time(@time_unit)
     timeout = abs_timeout(now, opts)
 
     case checkout(pool, callers, queue?, now, timeout) do
-      {:ok, _, _, _} = ok ->
+      {:ok, _, _, _, _} = ok ->
         ok
+
+      {:error, %DBConnection.ConnectionError{} = connection_error} = error ->
+        :telemetry.execute(
+          [:db_connection, :connection_error],
+          %{count: 1},
+          %{
+            error: connection_error,
+            opts: opts
+          }
+        )
+
+        error
 
       {:error, _} = error ->
         error
 
-      {:redirect, proxy} ->
-        checkout(proxy, opts)
+      {:redirect, caller, proxy} ->
+        case checkout(proxy, [caller], opts) do
+          {:ok, _, _, _, _} = ok ->
+            ok
+
+          {:error, %DBConnection.ConnectionError{message: message} = exception} ->
+            {:error,
+             %{
+               exception
+               | message:
+                   "could not checkout the connection owned by #{inspect(caller)}. " <>
+                     "When using the sandbox, connections are shared, so this may imply " <>
+                     "another process is using a connection. Reason: #{message}"
+             }}
+
+          {:error, _} = error ->
+            error
+        end
 
       {:exit, reason} ->
         exit({reason, {__MODULE__, :checkout, [pool, opts]}})
@@ -74,12 +98,12 @@ defmodule DBConnection.Holder do
 
   @spec checkin(pool_ref :: any) :: :ok
   def checkin(pool_ref) do
-    now = System.monotonic_time(@time_unit)
     # Note we may call checkin after a disconnect/stop. For this reason, we choose
     # to not change the status on checkin but strictly speaking nobody can access
     # the holder after disconnect/stop unless they store a copy of %DBConnection{}.
-    # Note status can't be :aborted as aborted is always reverted at the of a transaction.
-    done(pool_ref, [{conn(:lock) + 1, nil}], :checkin, now)
+    # Note status can't be :aborted as aborted is always reverted at the end of a
+    # transaction.
+    done(pool_ref, [{conn(:lock) + 1, nil}], :checkin, System.monotonic_time())
   end
 
   @spec disconnect(pool_ref :: any, err :: Exception.t()) :: :ok
@@ -156,9 +180,9 @@ defmodule DBConnection.Holder do
 
   ## Pool callbacks (invoked by pools)
 
-  @spec reply_redirect({pid, reference}, GenServer.server()) :: :ok
-  def reply_redirect(from, redirect) do
-    GenServer.reply(from, {:redirect, redirect})
+  @spec reply_redirect({pid, reference}, pid | :shared | :auto, GenServer.server()) :: :ok
+  def reply_redirect(from, caller, redirect) do
+    GenServer.reply(from, {:redirect, caller, redirect})
     :ok
   end
 
@@ -168,13 +192,13 @@ defmodule DBConnection.Holder do
     :ok
   end
 
-  @spec handle_checkout(t, {pid, reference}, reference) :: boolean
-  def handle_checkout(holder, {pid, mref}, ref) do
-    :ets.give_away(holder, pid, {mref, ref})
+  @spec handle_checkout(t, {pid, reference}, reference, non_neg_integer | nil) :: boolean
+  def handle_checkout(holder, {pid, mref}, ref, checkin_time) do
+    :ets.give_away(holder, pid, {mref, ref, checkin_time})
   rescue
     ArgumentError ->
-      if Process.alive?(pid) do
-        raise ArgumentError, no_holder(holder)
+      if Process.alive?(pid) or :ets.info(holder, :owner) != self() do
+        raise ArgumentError, no_holder(holder, pid)
       else
         false
       end
@@ -195,7 +219,7 @@ defmodule DBConnection.Holder do
     :ets.lookup(holder, :conn)
   rescue
     ArgumentError ->
-      raise ArgumentError, no_holder(holder)
+      raise ArgumentError, no_holder(holder, nil)
   else
     [conn(connection: conn, state: state)] ->
       DBConnection.Connection.ping({conn, holder}, state)
@@ -235,7 +259,7 @@ defmodule DBConnection.Holder do
     send(pid, {:db_connection, {self(), lock}, {:checkout, callers, start, queue?}})
 
     receive do
-      {:"ETS-TRANSFER", holder, pool, {^lock, ref}} ->
+      {:"ETS-TRANSFER", holder, pool, {^lock, ref, checkin_time}} ->
         Process.demonitor(lock, [:flush])
         {deadline, ops} = start_deadline(timeout, pool, ref, holder, start)
         :ets.update_element(holder, :conn, [{conn(:lock) + 1, lock} | ops])
@@ -243,7 +267,7 @@ defmodule DBConnection.Holder do
         pool_ref =
           pool_ref(pool: pool, reference: ref, deadline: deadline, holder: holder, lock: lock)
 
-        checkout_result(holder, pool_ref)
+        checkout_result(holder, pool_ref, checkin_time)
 
       {^lock, reply} ->
         Process.demonitor(lock, [:flush])
@@ -254,7 +278,7 @@ defmodule DBConnection.Holder do
     end
   end
 
-  defp checkout_result(holder, pool_ref) do
+  defp checkout_result(holder, pool_ref, checkin_time) do
     try do
       :ets.lookup(holder, :conn)
     rescue
@@ -264,12 +288,36 @@ defmodule DBConnection.Holder do
         {:error, DBConnection.ConnectionError.exception(msg)}
     else
       [conn(module: mod, state: state)] ->
-        {:ok, pool_ref, mod, state}
+        {:ok, pool_ref, mod, checkin_time, state}
     end
   end
 
-  defp no_holder(holder) do
-    "#{inspect(__MODULE__)} #{inspect(holder)} does not exist, pool inconsistent, please report at https://github.com/elixir-ecto/db_connection/issues"
+  defp no_holder(holder, maybe_pid) do
+    reason =
+      case :ets.info(holder, :owner) do
+        :undefined -> "does not exist"
+        ^maybe_pid -> "is being given to its current owner"
+        owner when owner != self() -> "does not belong to the giving process"
+        _ -> "could not be given away"
+      end
+
+    call_reason =
+      if maybe_pid do
+        "Error happened when attempting to transfer to #{inspect(maybe_pid)} " <>
+          "(alive: #{Process.alive?(maybe_pid)})"
+      else
+        "Error happened when looking up connection"
+      end
+
+    """
+    #{inspect(__MODULE__)} #{inspect(holder)} #{reason}, pool inconsistent.
+    #{call_reason}.
+
+    SELF: #{inspect(self())}
+    ETS INFO: #{inspect(:ets.info(holder))}
+
+    Please report at https://github.com/elixir-ecto/db_connection/issues"
+    """
   end
 
   defp holder_apply(holder, module, fun, args) do
@@ -277,14 +325,11 @@ defmodule DBConnection.Holder do
       apply(module, fun, args)
     catch
       kind, reason ->
-        {:catch, kind, reason, System.stacktrace()}
+        {:catch, kind, reason, __STACKTRACE__}
     else
       result when is_tuple(result) ->
         state = :erlang.element(:erlang.tuple_size(result), result)
 
-        # This means a disconnect happened from the connection side
-        # but, since we succeed, we can return the result and the client
-        # will notice the disconnect anyway.
         try do
           :ets.update_element(holder, :conn, {conn(:state) + 1, state})
           result

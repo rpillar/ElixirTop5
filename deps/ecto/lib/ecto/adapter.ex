@@ -25,7 +25,7 @@ defmodule Ecto.Adapter do
   @doc """
   Ensure all applications necessary to run the adapter are started.
   """
-  @callback ensure_all_started(config :: Keyword.t(), type :: :application.restart_type()) ::
+  @callback ensure_all_started(config :: Keyword.t(), type :: :permanent | :transient | :temporary) ::
               {:ok, [atom]} | {:error, atom}
 
   @doc """
@@ -59,6 +59,11 @@ defmodule Ecto.Adapter do
   `Ecto.Adapter.Queryable` and `Ecto.Adapter.Schema`.
   """
   @callback checkout(adapter_meta, config :: Keyword.t(), (() -> result)) :: result when result: var
+
+  @doc """
+  Returns true if a connection has been checked out.
+  """
+  @callback checked_out?(adapter_meta) :: boolean
 
   @doc """
   Returns the loaders for a given type.

@@ -1,6 +1,9 @@
 # Plug.Crypto
 
-Crypto-related functionality for web applications, used by [Plug][plug].
+[![Hex.pm Version](https://img.shields.io/hexpm/v/plug_crypto.svg)](https://hex.pm/packages/plug_crypto)
+[![Build Status](https://github.com/elixir-plug/plug_crypto/workflows/CI/badge.svg)](https://github.com/elixir-plug/plug_crypto/actions?query=workflow%3ACI)
+
+Crypto-related functionality for web applications, used by [Plug](https://github.com/elixir-plug/plug).
 
 ## Installation
 
@@ -16,25 +19,12 @@ If you're using [Plug][plug], you can already use the functionality in plug_cryp
 
 ## Contributing
 
-We welcome everyone to contribute to plug_crypto and help us tackle existing issues!
+We welcome everyone to contribute to Plug.Crypto and help us tackle existing issues!
 
-Use the [issue tracker][issues] for bug reports or feature requests. You may also start a discussion on the [mailing list][ML] or the **[#elixir-lang][IRC]** channel on [Freenode][freenode] IRC. Open a [pull request][pulls] when you are ready to contribute.
-
-When submitting a pull request you should not update the [CHANGELOG.md](./CHANGELOG.md).
-
-If you are planning to contribute documentation, [please check our best practices for writing documentation][writing-docs].
-
-Finally, remember all interactions in our official spaces follow our [Code of Conduct][code-of-conduct].
+- Use the [issue tracker](https://github.com/elixir-plug/plug_crypto/issues) for bug reports or feature requests.
+- Open a [pull request](https://github.com/elixir-plug/plug_crypto/pulls) when you are ready to contribute.
+- Do not update the `CHANGELOG.md` when submitting a pull request.
 
 ## License
 
-plug_crypto source code is released under Apache 2 License. Check the [LICENSE](./LICENSE) file for more information.
-
-[plug]: https://github.com/elixir-plug/plug
-[issues]: https://github.com/elixir-plug/plug_crypto/issues
-[pulls]: https://github.com/elixir-plug/plug/pulls
-[ML]: https://groups.google.com/group/elixir-lang-core
-[code-of-conduct]: https://github.com/elixir-lang/elixir/blob/master/CODE_OF_CONDUCT.md
-[writing-docs]: https://hexdocs.pm/elixir/writing-documentation.html
-[IRC]: https://webchat.freenode.net/?channels=#elixir-lang
-[freenode]: https://freenode.net/
+Plug.Crypto source code is released under Apache License 2.0. Check the [LICENSE](./LICENSE) file for more information.

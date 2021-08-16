@@ -40,6 +40,9 @@ defmodule Phoenix.HTML.Link do
       which sets the proper information. In order to submit the
       form, JavaScript must be enabled
 
+    * `:csrf_token` - a custom token to use for links with a method
+      other than `:get`.
+
   All other options are forwarded to the underlying `<a>` tag.
 
   ## JavaScript dependency
@@ -171,7 +174,7 @@ defmodule Phoenix.HTML.Link do
       button("hello", to: "/world")
       #=> <button class="button" data-csrf="csrf_token" data-method="post" data-to="/world">hello</button>
 
-      button("hello", to: "/world", method: "get", class: "btn")
+      button("hello", to: "/world", method: :get, class: "btn")
       #=> <button class="btn" data-method="get" data-to="/world">hello</button>
 
   ## Options

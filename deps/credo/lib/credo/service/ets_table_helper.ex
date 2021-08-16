@@ -5,6 +5,8 @@ defmodule Credo.Service.ETSTableHelper do
     quote do
       use GenServer
 
+      @timeout 60_000
+
       alias Credo.Service.ETSTableHelper
 
       @table_name __MODULE__
@@ -13,12 +15,20 @@ defmodule Credo.Service.ETSTableHelper do
         {:ok, _pid} = GenServer.start_link(__MODULE__, opts, name: __MODULE__)
       end
 
-      def get(filename) do
-        GenServer.call(__MODULE__, {:get, filename})
+      def get(source_file) do
+        hash = source_file.hash
+
+        case :ets.lookup(@table_name, hash) do
+          [{^hash, value}] ->
+            {:ok, value}
+
+          [] ->
+            :notfound
+        end
       end
 
-      def put(filename, value) do
-        GenServer.call(__MODULE__, {:put, filename, value})
+      def put(source_file, value) do
+        GenServer.call(__MODULE__, {:put, source_file.hash, value}, @timeout)
       end
 
       # callbacks
@@ -36,18 +46,8 @@ defmodule Credo.Service.ETSTableHelper do
     {:ok, ets}
   end
 
-  def handle_call(table_name, {:get, filename}, _from, current_state) do
-    case :ets.lookup(table_name, filename) do
-      [{^filename, value}] ->
-        {:reply, {:ok, value}, current_state}
-
-      [] ->
-        {:reply, :notfound, current_state}
-    end
-  end
-
-  def handle_call(table_name, {:put, filename, value}, _from, current_state) do
-    :ets.insert(table_name, {filename, value})
+  def handle_call(table_name, {:put, hash, value}, _from, current_state) do
+    :ets.insert(table_name, {hash, value})
 
     {:reply, value, current_state}
   end

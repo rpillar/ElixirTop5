@@ -70,6 +70,13 @@ defmodule Ecto.Query.WindowAPI do
   def max(value), do: doc! [value]
 
   @doc """
+  Defines a value based on the function and the window. See moduledoc for more information.
+
+      from e in Employee, select: over(avg(e.salary, partition_by: e.depname))
+  """
+  def over(window_function, window_name), do: doc! [window_function, window_name]
+
+  @doc """
   Returns number of the current row within its partition, counting from 1.
 
       from p in Post,
@@ -149,6 +156,19 @@ defmodule Ecto.Query.WindowAPI do
   Note that this function must be invoked using window function syntax.
   """
   def last_value(value), do: doc! [value]
+
+
+  @doc """
+  Applies the given expression as a FILTER clause against an
+  aggregate. This is currently only supported by Postgres.
+
+      from p in Post,
+           select: avg(p.value)
+                   |> filter(p.value > 0 and p.value < 100)
+                   |> over(partition_by: p.category_id, order_by: p.date)
+  """
+
+  def filter(value, filter), do: doc! [value, filter]
 
   @doc """
   Returns value evaluated at the row that is the nth row of the window

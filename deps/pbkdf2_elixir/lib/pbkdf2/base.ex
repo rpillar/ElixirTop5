@@ -8,45 +8,13 @@ defmodule Pbkdf2.Base do
 
   @max_length bsl(1, 32) - 1
 
-  @doc """
-  Generate a salt for use with Django's version of pbkdf2.
-
-  ## Examples
-
-  To create a valid Django hash, using pbkdf2_sha256:
-
-      salt = django_salt(12)
-      opts = [digest: :sha256, format: :django]
-      Pbkdf2.Base.hash_password(password, salt, opts)
-
-  This example uses 160_000 rounds. Add `rounds: number` to the opts
-  if you want to change the number of rounds.
-  """
+  @deprecated "Use Pbkdf2.gen_salt/1 (with `format: :django`) instead"
   def django_salt(len) do
-    :crypto.strong_rand_bytes(len * 2)
-    |> Pbkdf2.Base64.encode()
-    |> String.replace(~r{[.|/]}, "")
-    |> :binary.part(0, len)
+    Tools.get_random_string(len)
   end
 
   @doc """
   Hash a password using Pbkdf2.
-
-  ## Configurable parameters
-
-  The following parameter can be set in the config file:
-
-    * rounds - computational cost
-      * the number of rounds
-      * 160_000 is the default
-
-  If you are hashing passwords in your tests, it can be useful to add
-  the following to the `config/test.exs` file:
-
-      config :pbkdf2_elixir,
-        rounds: 1
-
-  NB. do not use this value in production.
 
   ## Options
 
@@ -58,43 +26,45 @@ defmodule Pbkdf2.Base do
       * the default is 160_000
       * this can also be set in the config file
     * `:format` - the output format of the hash
-      * the default is modular crypt format
+      * the default is `:modular` - modular crypt format
+      * the other available formats are:
+        * `:django` - the format used in django applications
+        * `:hex` - the hash is encoded in hexadecimal
     * `:digest` - the sha algorithm that pbkdf2 will use
       * the default is sha512
     * `:length` - the length, in bytes, of the hash
       * the default is 64 for sha512 and 32 for sha256
 
   """
-  def hash_password(password, salt, opts \\ [])
-
-  def hash_password(password, salt, opts) when byte_size(salt) in 8..1024 do
+  @spec hash_password(binary, binary, keyword) :: binary
+  def hash_password(password, salt, opts \\ []) do
+    Tools.check_salt_length(byte_size(salt))
     {rounds, output_fmt, {digest, length}} = get_opts(opts)
 
     if length > @max_length do
       raise ArgumentError, "length must be equal to or less than #{@max_length}"
     end
 
-    pbkdf2(password, salt, digest, rounds, length, 1, [], 0)
+    password
+    |> create_hash(salt, digest, rounds, length)
     |> format(salt, digest, rounds, output_fmt)
-  end
-
-  def hash_password(_, _, _) do
-    raise ArgumentError, """
-    The salt is the wrong length. It should be between 8 and 1024 bytes long.
-    """
   end
 
   @doc """
   Verify a password by comparing it with the stored Pbkdf2 hash.
   """
+  @spec verify_pass(binary, binary, binary, atom, binary, atom) :: boolean
   def verify_pass(password, hash, salt, digest, rounds, output_fmt) do
-    {salt, length} = case output_fmt do
-      :modular -> {Base64.decode(salt), byte_size(Pbkdf2.Base64.decode(hash))}
-      _ -> {salt, byte_size(Base.decode64!(hash))}
-    end
+    {salt, length} =
+      case output_fmt do
+        :modular -> {Base64.decode(salt), byte_size(Base64.decode(hash))}
+        :django -> {salt, byte_size(Base.decode64!(hash))}
+        :hex -> {salt, byte_size(Base.decode16!(hash, case: :lower))}
+      end
 
-    pbkdf2(password, salt, digest, String.to_integer(rounds), length, 1, [], 0)
-    |> verify_format(output_fmt)
+    password
+    |> create_hash(salt, digest, String.to_integer(rounds), length)
+    |> encode(output_fmt)
     |> Tools.secure_check(hash)
   end
 
@@ -109,21 +79,26 @@ defmodule Pbkdf2.Base do
     }
   end
 
-  defp pbkdf2(_password, _salt, _digest, _rounds, dklen, _block_index, acc, length)
+  defp create_hash(password, salt, digest, rounds, length) do
+    digest
+    |> hmac_fun(password)
+    |> do_create_hash(salt, rounds, length, 1, [], 0)
+  end
+
+  defp do_create_hash(_fun, _salt, _rounds, dklen, _block_index, acc, length)
        when length >= dklen do
     key = acc |> Enum.reverse() |> IO.iodata_to_binary()
     <<bin::binary-size(dklen), _::binary>> = key
     bin
   end
 
-  defp pbkdf2(password, salt, digest, rounds, dklen, block_index, acc, length) do
-    initial = :crypto.hmac(digest, password, <<salt::binary, block_index::integer-size(32)>>)
-    block = iterate(password, digest, rounds - 1, initial, initial)
+  defp do_create_hash(fun, salt, rounds, dklen, block_index, acc, length) do
+    initial = fun.(<<salt::binary, block_index::integer-size(32)>>)
+    block = iterate(fun, rounds - 1, initial, initial)
 
-    pbkdf2(
-      password,
+    do_create_hash(
+      fun,
       salt,
-      digest,
       rounds,
       dklen,
       block_index + 1,
@@ -132,11 +107,11 @@ defmodule Pbkdf2.Base do
     )
   end
 
-  defp iterate(_password, _digest, 0, _prev, acc), do: acc
+  defp iterate(_fun, 0, _prev, acc), do: acc
 
-  defp iterate(password, digest, round, prev, acc) do
-    next = :crypto.hmac(digest, password, prev)
-    iterate(password, digest, round - 1, next, :crypto.exor(next, acc))
+  defp iterate(fun, round, prev, acc) do
+    next = fun.(prev)
+    iterate(fun, round - 1, next, :crypto.exor(next, acc))
   end
 
   defp format(hash, salt, digest, rounds, :modular) do
@@ -149,7 +124,13 @@ defmodule Pbkdf2.Base do
 
   defp format(hash, _salt, _digest, _rounds, :hex), do: Base.encode16(hash, case: :lower)
 
-  defp verify_format(hash, :modular), do: Base64.encode(hash)
-  defp verify_format(hash, :django), do: Base.encode64(hash)
-  defp verify_format(hash, _), do: hash
+  defp encode(hash, :modular), do: Base64.encode(hash)
+  defp encode(hash, :django), do: Base.encode64(hash)
+  defp encode(hash, :hex), do: Base.encode16(hash, case: :lower)
+
+  if System.otp_release() >= "22" do
+    defp hmac_fun(digest, key), do: &:crypto.mac(:hmac, digest, key, &1)
+  else
+    defp hmac_fun(digest, key), do: &:crypto.hmac(digest, key, &1)
+  end
 end

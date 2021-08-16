@@ -130,6 +130,16 @@ defmodule Ecto.Integration.JoinsTest do
     assert [{^p1, nil}, {^p2, ^c1}] = TestRepo.all(query)
   end
 
+  @tag :left_join
+  test "left join with missing entries from subquery" do
+    p1 = TestRepo.insert!(%Post{title: "1"})
+    p2 = TestRepo.insert!(%Post{title: "2"})
+    c1 = TestRepo.insert!(%Permalink{url: "1", post_id: p2.id})
+
+    query = from(p in Post, left_join: c in subquery(Permalink), on: p.id == c.post_id, order_by: p.id, select: {p, c})
+    assert [{^p1, nil}, {^p2, ^c1}] = TestRepo.all(query)
+  end
+
   @tag :right_join
   test "right joins with missing entries" do
     %Post{id: pid1} = TestRepo.insert!(%Post{title: "1"})
@@ -155,7 +165,7 @@ defmodule Ecto.Integration.JoinsTest do
   ## Associations joins
 
   test "has_many association join" do
-    post = TestRepo.insert!(%Post{title: "1", text: "hi"})
+    post = TestRepo.insert!(%Post{title: "1"})
     c1 = TestRepo.insert!(%Comment{text: "hey", post_id: post.id})
     c2 = TestRepo.insert!(%Comment{text: "heya", post_id: post.id})
 
@@ -164,21 +174,25 @@ defmodule Ecto.Integration.JoinsTest do
   end
 
   test "has_one association join" do
-    post = TestRepo.insert!(%Post{title: "1", text: "hi"})
-    p1 = TestRepo.insert!(%Permalink{url: "hey", post_id: post.id})
-    p2 = TestRepo.insert!(%Permalink{url: "heya", post_id: post.id})
+    post1 = TestRepo.insert!(%Post{title: "1"})
+    post2 = TestRepo.insert!(%Post{title: "1"})
+    user = TestRepo.insert!(%User{})
+    p1 = TestRepo.insert!(%Permalink{url: "hey", user_id: user.id, post_id: post1.id})
+    p2 = TestRepo.insert!(%Permalink{url: "heya", user_id: user.id, post_id: post2.id})
 
-    query = from(p in Post, join: c in assoc(p, :permalink), select: {p, c}, order_by: c.id)
-    [{^post, ^p1}, {^post, ^p2}] = TestRepo.all(query)
+    query = from(p in User, join: c in assoc(p, :permalink), select: {p, c}, order_by: c.id)
+    [{^user, ^p1}, {^user, ^p2}] = TestRepo.all(query)
   end
 
   test "belongs_to association join" do
-    post = TestRepo.insert!(%Post{title: "1"})
-    p1 = TestRepo.insert!(%Permalink{url: "hey", post_id: post.id})
-    p2 = TestRepo.insert!(%Permalink{url: "heya", post_id: post.id})
+    post1 = TestRepo.insert!(%Post{title: "1"})
+    post2 = TestRepo.insert!(%Post{title: "1"})
+    user = TestRepo.insert!(%User{})
+    p1 = TestRepo.insert!(%Permalink{url: "hey", user_id: user.id, post_id: post1.id})
+    p2 = TestRepo.insert!(%Permalink{url: "heya", user_id: user.id, post_id: post2.id})
 
-    query = from(p in Permalink, join: c in assoc(p, :post), select: {p, c}, order_by: p.id)
-    [{^p1, ^post}, {^p2, ^post}] = TestRepo.all(query)
+    query = from(p in Permalink, join: c in assoc(p, :user), select: {p, c}, order_by: p.id)
+    [{^p1, ^user}, {^p2, ^user}] = TestRepo.all(query)
   end
 
   test "has_many through association join" do
@@ -234,19 +248,19 @@ defmodule Ecto.Integration.JoinsTest do
     assert [
              %{text: "c1", author: %{name: "Alice"}},
              %{text: "c2", author: %{name: "John"}}
-           ] = p1.comments
+           ] = Enum.sort_by(p1.comments, & &1.text)
 
     assert [
              %{text: "c3", author: %{name: "John"}},
              %{text: "c4", author: nil},
              %{text: "c5", author: %{name: "Alice"}}
-           ] = p2.comments
+           ] = Enum.sort_by(p2.comments, & &1.text)
   end
 
   test "many_to_many association join" do
-    p1 = TestRepo.insert!(%Post{title: "1", text: "hi"})
-    p2 = TestRepo.insert!(%Post{title: "2", text: "ola"})
-    _p = TestRepo.insert!(%Post{title: "3", text: "hello"})
+    p1 = TestRepo.insert!(%Post{title: "1"})
+    p2 = TestRepo.insert!(%Post{title: "2"})
+    _p = TestRepo.insert!(%Post{title: "3"})
     u1 = TestRepo.insert!(%User{name: "john"})
     u2 = TestRepo.insert!(%User{name: "mary"})
 
@@ -327,7 +341,7 @@ defmodule Ecto.Integration.JoinsTest do
     # Without on
     query = from(p in Post, left_join: u in assoc(p, :users), preload: [users: u], order_by: p.id)
     [p1, p2, p3] = TestRepo.all(query)
-    assert p1.users == [u1, u2]
+    assert Enum.sort_by(p1.users, & &1.name) == [u1, u2]
     assert p2.users == [u2]
     assert p3.users == []
 
@@ -371,8 +385,8 @@ defmodule Ecto.Integration.JoinsTest do
     %Post{id: pid1} = TestRepo.insert!(%Post{})
     %Post{id: pid2} = TestRepo.insert!(%Post{})
 
-    %Permalink{} = TestRepo.insert!(%Permalink{post_id: pid1})
-    %Permalink{} = TestRepo.insert!(%Permalink{post_id: pid2})
+    %Permalink{} = TestRepo.insert!(%Permalink{post_id: pid1, url: "1"})
+    %Permalink{} = TestRepo.insert!(%Permalink{post_id: pid2, url: "2"})
 
     %User{id: uid1} = TestRepo.insert!(%User{})
     %User{id: uid2} = TestRepo.insert!(%User{})
@@ -566,7 +580,7 @@ defmodule Ecto.Integration.JoinsTest do
   end
 
   test "association with composite pk join" do
-    post = TestRepo.insert!(%Post{title: "1", text: "hi"})
+    post = TestRepo.insert!(%Post{title: "1"})
     user = TestRepo.insert!(%User{name: "1"})
     TestRepo.insert!(%PostUserCompositePk{post_id: post.id, user_id: user.id})
 

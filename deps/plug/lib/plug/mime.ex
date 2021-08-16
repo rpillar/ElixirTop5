@@ -21,16 +21,18 @@ defmodule Plug.MIME do
     """)
   end
 
+  @deprecated "Use MIME.extensions(type) != [] instead"
   def valid?(type) do
     IO.puts(
       :stderr,
-      "Plug.MIME.valid?/1 is deprecated, please use MIME.valid?/1 instead\n" <>
+      "Plug.MIME.valid?/1 is deprecated, please use MIME.extensions(type) != [] instead\n" <>
         Exception.format_stacktrace()
     )
 
-    MIME.valid?(type)
+    MIME.extensions(type) != []
   end
 
+  @deprecated "Use MIME.extensions/1 instead"
   def extensions(type) do
     IO.puts(
       :stderr,
@@ -41,6 +43,7 @@ defmodule Plug.MIME do
     MIME.extensions(type)
   end
 
+  @deprecated "Use MIME.type/1 instead"
   def type(file_extension) do
     IO.puts(
       :stderr,
@@ -51,6 +54,7 @@ defmodule Plug.MIME do
     MIME.type(file_extension)
   end
 
+  @deprecated "Use MIME.from_path/1 instead"
   def path(path) do
     IO.puts(
       :stderr,

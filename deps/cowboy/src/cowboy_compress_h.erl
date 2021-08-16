@@ -71,9 +71,10 @@ early_error(StreamID, Reason, PartialReq, Resp, Opts) ->
 %% Internal.
 
 %% Check if the client supports decoding of gzip responses.
+%%
+%% A malformed accept-encoding header is ignored (no compression).
 check_req(Req) ->
-	%% @todo Probably shouldn't unconditionally crash on failure.
-	case cowboy_req:parse_header(<<"accept-encoding">>, Req) of
+	try cowboy_req:parse_header(<<"accept-encoding">>, Req) of
 		%% Client doesn't support any compression algorithm.
 		undefined ->
 			#state{compress=undefined};
@@ -87,6 +88,9 @@ check_req(Req) ->
 				_ ->
 					#state{compress=gzip}
 			end
+	catch
+		_:_ ->
+			#state{compress=undefined}
 	end.
 
 %% Do not compress responses that contain the content-encoding header.
@@ -176,10 +180,10 @@ gzip_response({response, Status, Headers, Body}, State) ->
 	after
 		zlib:close(Z)
 	end,
-	{{response, Status, Headers#{
+	{{response, Status, vary(Headers#{
 		<<"content-length">> => integer_to_binary(iolist_size(GzBody)),
 		<<"content-encoding">> => <<"gzip">>
-	}, GzBody}, State}.
+	}), GzBody}, State}.
 
 gzip_headers({headers, Status, Headers0}, State) ->
 	Z = zlib:open(),
@@ -187,9 +191,25 @@ gzip_headers({headers, Status, Headers0}, State) ->
 	%% @todo It might be good to allow them to be configured?
 	zlib:deflateInit(Z, default, deflated, 31, 8, default),
 	Headers = maps:remove(<<"content-length">>, Headers0),
-	{{headers, Status, Headers#{
+	{{headers, Status, vary(Headers#{
 		<<"content-encoding">> => <<"gzip">>
-	}}, State#state{deflate=Z}}.
+	})}, State#state{deflate=Z}}.
+
+%% We must add content-encoding to vary if it's not already there.
+vary(Headers=#{<<"vary">> := Vary}) ->
+	try cow_http_hd:parse_vary(iolist_to_binary(Vary)) of
+		'*' -> Headers;
+		List ->
+			case lists:member(<<"accept-encoding">>, List) of
+				true -> Headers;
+				false -> Headers#{<<"vary">> => [Vary, <<", accept-encoding">>]}
+			end
+	catch _:_ ->
+		%% The vary header is invalid. Probably empty. We replace it with ours.
+		Headers#{<<"vary">> => <<"accept-encoding">>}
+	end;
+vary(Headers) ->
+	Headers#{<<"vary">> => <<"accept-encoding">>}.
 
 %% It is not possible to combine zlib and the sendfile
 %% syscall as far as I can tell, because the zlib format

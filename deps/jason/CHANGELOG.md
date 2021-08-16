@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.2 (08.09.2020)
+
+### Enhancements
+
+* Support Decimal 2.0
+
+## 1.2.1 (04.05.2020)
+
+### Security
+
+* Fix `html_safe` escaping in `Jason.encode`
+
+The `<!--` sequence of characters would not be escaped in `Jason.encode`
+with`html_escape` mode, which could lead to DoS attacks when used for
+embedding of arbitrary, user controlled strings into HTML through JSON
+(e.g. inside of `<script>` tags).
+
+If you were not using the `html_safe` option, you are not affected.
+
+Affected versions: < 1.2.1
+Patched versions: >= 1.2.1
+
+## 1.2.0 (17.03.2020)
+
+### Enhancements
+
+* Add `Jason.Encode.keyword/2`
+  ([cb1f26a](https://github.com/michalmuskala/jason/commit/cb1f26a)).
+
+### Bug fixes
+
+* Fix `Jason.Helpers.json_map/1` value expansion
+  ([70b046a](https://github.com/michalmuskala/jason/commit/70b046a)).
+
 ## 1.1.2 (19.10.2018)
 
 ### Bug fixes

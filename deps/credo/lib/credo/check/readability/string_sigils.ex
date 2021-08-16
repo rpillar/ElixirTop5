@@ -1,46 +1,49 @@
 defmodule Credo.Check.Readability.StringSigils do
-  @moduledoc false
-
-  @checkdoc ~S"""
-  If you used quoted strings that contain quotes, you might want to consider
-  switching to the use of sigils instead.
-
-      # okay
-
-      "<a href=\"http://elixirweekly.net\">#\{text}</a>"
-
-      # not okay, lots of escaped quotes
-
-      "<a href=\"http://elixirweekly.net\" target=\"_blank\">#\{text}</a>"
-
-      # refactor to
-
-      ~S(<a href="http://elixirweekly.net" target="_blank">#\{text}</a>)
-
-  This allows us to remove the noise which results from the need to escape
-  quotes within quotes.
-  """
-  @explanation [
-    check: @checkdoc,
-    params: [
-      maximum_allowed_quotes: "The maximum amount of escaped quotes you want to tolerate."
-    ]
-  ]
-  @default_params [
-    maximum_allowed_quotes: 3
-  ]
-  @quote_codepoint 34
-
   alias Credo.SourceFile
   alias Credo.Code.Heredocs
 
-  use Credo.Check, base_priority: :low
+  use Credo.Check,
+    base_priority: :low,
+    param_defaults: [
+      maximum_allowed_quotes: 3
+    ],
+    explanations: [
+      check: ~S"""
+      If you used quoted strings that contain quotes, you might want to consider
+      switching to the use of sigils instead.
+
+          # okay
+
+          "<a href=\"http://elixirweekly.net\">#\{text}</a>"
+
+          # not okay, lots of escaped quotes
+
+          "<a href=\"http://elixirweekly.net\" target=\"_blank\">#\{text}</a>"
+
+          # refactor to
+
+          ~S(<a href="http://elixirweekly.net" target="_blank">#\{text}</a>)
+
+      This allows us to remove the noise which results from the need to escape
+      quotes within quotes.
+
+      Like all `Readability` issues, this one is not a technical concern.
+      But you can improve the odds of others reading and liking your code by making
+      it easier to follow.
+      """,
+      params: [
+        maximum_allowed_quotes: "The maximum amount of escaped quotes you want to tolerate."
+      ]
+    ]
+
+  @quote_codepoint 34
 
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
     issue_meta = IssueMeta.for(source_file, params)
 
-    maximum_allowed_quotes = Params.get(params, :maximum_allowed_quotes, @default_params)
+    maximum_allowed_quotes = Params.get(params, :maximum_allowed_quotes, __MODULE__)
 
     case remove_heredocs_and_convert_to_ast(source_file) do
       {:ok, ast} ->
@@ -54,7 +57,6 @@ defmodule Credo.Check.Readability.StringSigils do
 
   defp remove_heredocs_and_convert_to_ast(source_file) do
     source_file
-    |> SourceFile.source()
     |> Heredocs.replace_with_spaces()
     |> Credo.Code.ast()
   end

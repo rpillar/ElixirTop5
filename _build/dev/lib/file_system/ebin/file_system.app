@@ -8,4 +8,4 @@
                         'Elixir.FileSystem.Backends.FSWindows',
                         'Elixir.FileSystem.Worker']},
               {registered,[]},
-              {vsn,"0.2.6"}]}.
+              {vsn,"0.2.10"}]}.

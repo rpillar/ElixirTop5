@@ -15,10 +15,6 @@
 -module(cowboy_stream_h).
 -behavior(cowboy_stream).
 
--ifdef(OTP_RELEASE).
--compile({nowarn_deprecated_function, [{erlang, get_stacktrace, 0}]}).
--endif.
-
 -export([init/3]).
 -export([data/4]).
 -export([info/3]).
@@ -26,7 +22,6 @@
 -export([early_error/5]).
 
 -export([request_process/3]).
--export([execute/3]).
 -export([resume/5]).
 
 -record(state, {
@@ -34,17 +29,16 @@
 	ref = undefined :: ranch:ref(),
 	pid = undefined :: pid(),
 	expect = undefined :: undefined | continue,
+	read_body_pid = undefined :: pid() | undefined,
 	read_body_ref = undefined :: reference() | undefined,
 	read_body_timer_ref = undefined :: reference() | undefined,
 	read_body_length = 0 :: non_neg_integer() | infinity | auto,
 	read_body_is_fin = nofin :: nofin | {fin, non_neg_integer()},
 	read_body_buffer = <<>> :: binary(),
-	body_length = 0 :: non_neg_integer()
+	body_length = 0 :: non_neg_integer(),
+	stream_body_pid = undefined :: pid() | undefined,
+	stream_body_status = normal :: normal | blocking | blocked
 }).
-
-%% @todo For shutting down children we need to have a timeout before we terminate
-%% the stream like supervisors do. So here just send a message to yourself first,
-%% and then decide what to do when receiving this message.
 
 -spec init(cowboy_stream:streamid(), cowboy_req:req(), cowboy:opts())
 	-> {[{spawn, pid(), timeout()}], #state{}}.
@@ -93,11 +87,12 @@ data(StreamID, IsFin, Data, State=#state{
 %% Stream is waiting for data using auto mode.
 %%
 %% There is no buffering done in auto mode.
-data(StreamID, IsFin, Data, State=#state{pid=Pid, read_body_ref=Ref,
+data(StreamID, IsFin, Data, State=#state{read_body_pid=Pid, read_body_ref=Ref,
 		read_body_length=auto, body_length=BodyLen}) ->
 	send_request_body(Pid, Ref, IsFin, BodyLen, Data),
 	do_data(StreamID, IsFin, Data, [{flow, byte_size(Data)}], State#state{
 		read_body_ref=undefined,
+		%% @todo This is wrong, it's missing byte_size(Data).
 		body_length=BodyLen
 	});
 %% Stream is waiting for data but we didn't receive enough to send yet.
@@ -110,10 +105,9 @@ data(StreamID, IsFin=nofin, Data, State=#state{
 		body_length=BodyLen + byte_size(Data)
 	});
 %% Stream is waiting for data and we received enough to send.
-data(StreamID, IsFin, Data, State=#state{pid=Pid, read_body_ref=Ref,
+data(StreamID, IsFin, Data, State=#state{read_body_pid=Pid, read_body_ref=Ref,
 		read_body_timer_ref=TRef, read_body_buffer=Buffer, body_length=BodyLen0}) ->
 	BodyLen = BodyLen0 + byte_size(Data),
-	%% @todo Handle the infinity case where no TRef was defined.
 	ok = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
 	send_request_body(Pid, Ref, IsFin, BodyLen, <<Buffer/binary, Data/binary>>),
 	do_data(StreamID, IsFin, Data, [], State#state{
@@ -161,13 +155,14 @@ info(StreamID, Exit={'EXIT', Pid, {Reason, Stacktrace}}, State=#state{ref=Ref, p
 		{error_response, 500, #{<<"content-length">> => <<"0">>}, <<>>}
 	|Commands], State);
 %% Request body, auto mode, no body buffered.
-info(StreamID, Info={read_body, Ref, auto, infinity}, State=#state{read_body_buffer= <<>>}) ->
+info(StreamID, Info={read_body, Pid, Ref, auto, infinity}, State=#state{read_body_buffer= <<>>}) ->
 	do_info(StreamID, Info, [], State#state{
+		read_body_pid=Pid,
 		read_body_ref=Ref,
 		read_body_length=auto
 	});
 %% Request body, auto mode, body buffered or complete.
-info(StreamID, Info={read_body, Ref, auto, infinity}, State=#state{pid=Pid,
+info(StreamID, Info={read_body, Pid, Ref, auto, infinity}, State=#state{
 		read_body_is_fin=IsFin, read_body_buffer=Buffer, body_length=BodyLen}) ->
 	send_request_body(Pid, Ref, IsFin, BodyLen, Buffer),
 	do_info(StreamID, Info, [{flow, byte_size(Buffer)}],
@@ -176,26 +171,26 @@ info(StreamID, Info={read_body, Ref, auto, infinity}, State=#state{pid=Pid,
 %%
 %% We do not send a 100 continue response if the client
 %% already started sending the body.
-info(StreamID, Info={read_body, Ref, Length, _}, State=#state{pid=Pid,
+info(StreamID, Info={read_body, Pid, Ref, Length, _}, State=#state{
 		read_body_is_fin=IsFin, read_body_buffer=Buffer, body_length=BodyLen})
 		when IsFin =:= fin; byte_size(Buffer) >= Length ->
 	send_request_body(Pid, Ref, IsFin, BodyLen, Buffer),
 	do_info(StreamID, Info, [], State#state{read_body_buffer= <<>>});
 %% Request body, not enough to send yet.
-info(StreamID, Info={read_body, Ref, Length, Period}, State=#state{expect=Expect}) ->
+info(StreamID, Info={read_body, Pid, Ref, Length, Period}, State=#state{expect=Expect}) ->
 	Commands = case Expect of
 		continue -> [{inform, 100, #{}}, {flow, Length}];
 		undefined -> [{flow, Length}]
 	end,
-	%% @todo Handle the case where Period =:= infinity.
 	TRef = erlang:send_after(Period, self(), {{self(), StreamID}, {read_body_timeout, Ref}}),
 	do_info(StreamID, Info, Commands, State#state{
+		read_body_pid=Pid,
 		read_body_ref=Ref,
 		read_body_timer_ref=TRef,
 		read_body_length=Length
 	});
 %% Request body reading timeout; send what we got.
-info(StreamID, Info={read_body_timeout, Ref}, State=#state{pid=Pid, read_body_ref=Ref,
+info(StreamID, Info={read_body_timeout, Ref}, State=#state{read_body_pid=Pid, read_body_ref=Ref,
 		read_body_is_fin=IsFin, read_body_buffer=Buffer, body_length=BodyLen}) ->
 	send_request_body(Pid, Ref, IsFin, BodyLen, Buffer),
 	do_info(StreamID, Info, [], State#state{
@@ -219,8 +214,42 @@ info(StreamID, Response={response, _, _, _}, State) ->
 	do_info(StreamID, Response, [Response], State#state{expect=undefined});
 info(StreamID, Headers={headers, _, _}, State) ->
 	do_info(StreamID, Headers, [Headers], State#state{expect=undefined});
+%% Sending data involves the data message, the stream_buffer_full alarm
+%% and the connection_buffer_full alarm. We stop sending acks when an alarm is on.
+%%
+%% We only apply backpressure when the message includes a pid. Otherwise
+%% it is a message from Cowboy, or the user circumventing the backpressure.
+%%
+%% We currently do not support sending data from multiple processes concurrently.
 info(StreamID, Data={data, _, _}, State) ->
 	do_info(StreamID, Data, [Data], State);
+info(StreamID, Data0={data, Pid, _, _}, State0=#state{stream_body_status=Status}) ->
+	State = case Status of
+		normal ->
+			Pid ! {data_ack, self()},
+			State0;
+		blocking ->
+			State0#state{stream_body_pid=Pid, stream_body_status=blocked};
+		blocked ->
+			State0
+	end,
+	Data = erlang:delete_element(2, Data0),
+	do_info(StreamID, Data, [Data], State);
+info(StreamID, Alarm={alarm, Name, on}, State0=#state{stream_body_status=Status})
+		when Name =:= connection_buffer_full; Name =:= stream_buffer_full ->
+	State = case Status of
+		normal -> State0#state{stream_body_status=blocking};
+		_ -> State0
+	end,
+	do_info(StreamID, Alarm, [], State);
+info(StreamID, Alarm={alarm, Name, off}, State=#state{stream_body_pid=Pid, stream_body_status=Status})
+		when Name =:= connection_buffer_full; Name =:= stream_buffer_full ->
+	_ = case Status of
+		normal -> ok;
+		blocking -> ok;
+		blocked -> Pid ! {data_ack, self()}
+	end,
+	do_info(StreamID, Alarm, [], State#state{stream_body_pid=undefined, stream_body_status=normal});
 info(StreamID, Trailers={trailers, _}, State) ->
 	do_info(StreamID, Trailers, [Trailers], State);
 info(StreamID, Push={push, _, _, _, _, _, _, _}, State) ->
@@ -257,41 +286,22 @@ send_request_body(Pid, Ref, fin, BodyLen, Data) ->
 
 %% Request process.
 
-%% We catch all exceptions in order to add the stacktrace to
-%% the exit reason as it is not propagated by proc_lib otherwise
-%% and therefore not present in the 'EXIT' message. We want
-%% the stacktrace in order to simplify debugging of errors.
-%%
-%% This + the behavior in proc_lib means that we will get a
-%% {Reason, Stacktrace} tuple for every exceptions, instead of
-%% just for errors and throws.
-%%
-%% @todo Better spec.
--spec request_process(_, _, _) -> _.
+%% We add the stacktrace to exit exceptions here in order
+%% to simplify the debugging of errors. The proc_lib library
+%% already adds the stacktrace to other types of exceptions.
+-spec request_process(cowboy_req:req(), cowboy_middleware:env(), [module()]) -> ok.
 request_process(Req, Env, Middlewares) ->
-	OTP = erlang:system_info(otp_release),
 	try
 		execute(Req, Env, Middlewares)
 	catch
-		exit:Reason ->
-			Stacktrace = erlang:get_stacktrace(),
-			erlang:raise(exit, {Reason, Stacktrace}, Stacktrace);
-		%% OTP 19 does not propagate any exception stacktraces,
-		%% we therefore add it for every class of exception.
-		_:Reason when OTP =:= "19" ->
-			Stacktrace = erlang:get_stacktrace(),
-			erlang:raise(exit, {Reason, Stacktrace}, Stacktrace);
-		%% @todo I don't think this clause is necessary.
-		Class:Reason ->
-			erlang:raise(Class, Reason, erlang:get_stacktrace())
+		exit:Reason={shutdown, _}:Stacktrace ->
+			erlang:raise(exit, Reason, Stacktrace);
+		exit:Reason:Stacktrace when Reason =/= normal, Reason =/= shutdown ->
+			erlang:raise(exit, {Reason, Stacktrace}, Stacktrace)
 	end.
 
-%% @todo
-%-spec execute(cowboy_req:req(), #state{}, cowboy_middleware:env(), [module()])
-%	-> ok.
--spec execute(_, _, _) -> _.
 execute(_, _, []) ->
-	ok; %% @todo Maybe error reason should differ here and there.
+	ok;
 execute(Req, Env, [Middleware|Tail]) ->
 	case Middleware:execute(Req, Env) of
 		{ok, Req2, Env2} ->
@@ -299,11 +309,10 @@ execute(Req, Env, [Middleware|Tail]) ->
 		{suspend, Module, Function, Args} ->
 			proc_lib:hibernate(?MODULE, resume, [Env, Tail, Module, Function, Args]);
 		{stop, _Req2} ->
-			ok %% @todo Maybe error reason should differ here and there.
+			ok
 	end.
 
--spec resume(cowboy_middleware:env(), [module()],
-	module(), module(), [any()]) -> ok.
+-spec resume(cowboy_middleware:env(), [module()], module(), atom(), [any()]) -> ok.
 resume(Env, Tail, Module, Function, Args) ->
 	case apply(Module, Function, Args) of
 		{ok, Req2, Env2} ->
@@ -311,5 +320,5 @@ resume(Env, Tail, Module, Function, Args) ->
 		{suspend, Module2, Function2, Args2} ->
 			proc_lib:hibernate(?MODULE, resume, [Env, Tail, Module2, Function2, Args2]);
 		{stop, _Req2} ->
-			ok %% @todo Maybe error reason should differ here and there.
+			ok
 	end.

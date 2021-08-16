@@ -12,10 +12,13 @@ defmodule Ecto.Migration.SchemaMigration do
     timestamps updated_at: false
   end
 
-  @opts [timeout: :infinity, log: false]
+  # The migration flag is used to signal to the repository
+  # we are in a migration operation.
+  @opts [timeout: :infinity, log: false, schema_migration: true]
 
-  def ensure_schema_migrations_table!(repo, opts) do
-    table_name = repo |> get_source |> String.to_atom()
+  def ensure_schema_migrations_table!(repo, config, opts) do
+    {repo, source} = get_repo_and_source(repo, config)
+    table_name = String.to_atom(source)
     table = %Ecto.Migration.Table{name: table_name, prefix: opts[:prefix]}
     meta = Ecto.Adapter.lookup_meta(repo.get_dynamic_repo())
 
@@ -25,27 +28,31 @@ defmodule Ecto.Migration.SchemaMigration do
     ]
 
     # DDL queries do not log, so we do not need to pass log: false here.
-    repo.__adapter__.execute_ddl(meta, {:create_if_not_exists, table, commands}, @opts)
+    repo.__adapter__().execute_ddl(meta, {:create_if_not_exists, table, commands}, @opts)
   end
 
-  def versions(repo, prefix) do
-    from(p in get_source(repo), select: type(p.version, :integer))
-    |> Map.put(:prefix, prefix)
+  def versions(repo, config, prefix) do
+    {repo, source} = get_repo_and_source(repo, config)
+    {repo, from(m in source, select: type(m.version, :integer)), [prefix: prefix] ++ @opts}
   end
 
-  def up(repo, version, prefix) do
+  def up(repo, config, version, prefix) do
+    {repo, source} = get_repo_and_source(repo, config)
+
     %__MODULE__{version: version}
-    |> Ecto.put_meta(prefix: prefix, source: get_source(repo))
-    |> repo.insert(@opts)
+    |> Ecto.put_meta(source: source)
+    |> repo.insert([prefix: prefix] ++ @opts)
   end
 
-  def down(repo, version, prefix) do
-    from(p in get_source(repo), where: p.version == type(^version, :integer))
-    |> Map.put(:prefix, prefix)
-    |> repo.delete_all(@opts)
+  def down(repo, config, version, prefix) do
+    {repo, source} = get_repo_and_source(repo, config)
+
+    from(m in source, where: m.version == type(^version, :integer))
+    |> repo.delete_all([prefix: prefix] ++ @opts)
   end
 
-  def get_source(repo) do
-    Keyword.get(repo.config, :migration_source, "schema_migrations")
+  def get_repo_and_source(repo, config) do
+    {Keyword.get(config, :migration_repo, repo),
+     Keyword.get(config, :migration_source, "schema_migrations")}
   end
 end

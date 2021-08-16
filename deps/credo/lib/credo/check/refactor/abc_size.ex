@@ -1,45 +1,63 @@
 defmodule Credo.Check.Refactor.ABCSize do
-  @moduledoc false
+  use Credo.Check,
+    tags: [:controversial],
+    param_defaults: [
+      max_size: 30,
+      excluded_functions: []
+    ],
+    explanations: [
+      check: """
+      The ABC size describes a metric based on assignments, branches and conditions.
 
-  @checkdoc """
-  The ABC size describes a metric based on assignments, branches and conditions.
+      A high ABC size is a hint that a function might be doing "more" than it
+      should.
 
-  A high ABC size is a hint that a function might be doing "more" than it
-  should.
-
-  As always: Take any metric with a grain of salt. Since this one was originally
-  introduced for C, C++ and Java, we still have to see whether or not this can
-  be a useful metric in a declarative language like Elixir.
-  """
-  @explanation [
-    check: @checkdoc,
-    params: [
-      max_size: "The maximum ABC size a function should have.",
-      excluded_functions: "All functions listed will be ignored."
+      As always: Take any metric with a grain of salt. Since this one was originally
+      introduced for C, C++ and Java, we still have to see whether or not this can
+      be a useful metric in a declarative language like Elixir.
+      """,
+      params: [
+        max_size: "The maximum ABC size a function should have.",
+        excluded_functions: "All functions listed will be ignored."
+      ]
     ]
-  ]
-  @default_params [
-    max_size: 30,
-    excluded_functions: []
-  ]
+
+  @ecto_functions ["where", "from", "select", "join"]
   @def_ops [:def, :defp, :defmacro]
   @branch_ops [:.]
   @condition_ops [:if, :unless, :for, :try, :case, :cond, :and, :or, :&&, :||]
   @non_calls [:==, :fn, :__aliases__, :__block__, :if, :or, :|>, :%{}]
 
-  use Credo.Check
-
   @doc false
-  def run(source_file, params \\ []) do
+  @impl true
+  def run(%SourceFile{} = source_file, params) do
+    ignore_ecto? = imports_ecto_query?(source_file)
     issue_meta = IssueMeta.for(source_file, params)
-    max_abc_size = Params.get(params, :max_size, @default_params)
-    excluded_functions = Params.get(params, :excluded_functions, @default_params)
+    max_abc_size = Params.get(params, :max_size, __MODULE__)
+    excluded_functions = Params.get(params, :excluded_functions, __MODULE__)
+
+    excluded_functions =
+      if ignore_ecto? do
+        @ecto_functions ++ excluded_functions
+      else
+        excluded_functions
+      end
 
     Credo.Code.prewalk(
       source_file,
       &traverse(&1, &2, issue_meta, max_abc_size, excluded_functions)
     )
   end
+
+  defp imports_ecto_query?(source_file),
+    do: Credo.Code.prewalk(source_file, &traverse_for_ecto/2, false)
+
+  defp traverse_for_ecto(_, true), do: {nil, true}
+
+  defp traverse_for_ecto({:import, _, [{:__aliases__, _, [:Ecto, :Query]} | _]}, false),
+    do: {nil, true}
+
+  defp traverse_for_ecto(ast, false), do: {ast, false}
 
   defp traverse(
          {:defmacro, _, [{:__using__, _, _}, _]} = ast,
@@ -51,6 +69,8 @@ defmodule Credo.Check.Refactor.ABCSize do
     {ast, issues}
   end
 
+  # TODO: consider for experimental check front-loader (ast)
+  # NOTE: see above how we want to exclude certain front-loads
   for op <- @def_ops do
     defp traverse(
            {unquote(op), meta, arguments} = ast,

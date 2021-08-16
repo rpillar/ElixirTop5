@@ -84,6 +84,28 @@ defmodule Gettext.Backend do
             ) :: {:ok | :default, String.t()}
 
   @doc """
+  Translates the given `msgid` with a given context (`msgctxt`) in the given `domain`.
+
+  `bindings` is a map of bindings to support interpolation.
+
+  See also `Gettext.dpgettext/5`.
+  """
+  @macrocallback dpgettext(
+                   domain :: Macro.t(),
+                   msgctxt :: String.t(),
+                   msgid :: String.t(),
+                   bindings :: Macro.t()
+                 ) :: Macro.t()
+
+  @doc """
+  Same as `dpgettext(domain, msgctxt, msgid, %{})`.
+
+  See also `Gettext.dpgettext/5`.
+  """
+  @macrocallback dpgettext(domain :: Macro.t(), msgctxt :: String.t(), msgid :: String.t()) ::
+                   Macro.t()
+
+  @doc """
   Translates the given `msgid` in the given `domain`.
 
   `bindings` is a map of bindings to support interpolation.
@@ -101,7 +123,25 @@ defmodule Gettext.Backend do
   @macrocallback dgettext(domain :: Macro.t(), msgid :: String.t()) :: Macro.t()
 
   @doc """
-  Same as `dgettext("default", msgid, %{})`.
+  Translates the given `msgid` with the given context (`msgctxt`).
+
+  `bindings` is a map of bindings to support interpolation.
+
+  See also `Gettext.pgettext/4`.
+  """
+  @macrocallback pgettext(msgctxt :: String.t(), msgid :: String.t(), bindings :: Macro.t()) ::
+                   Macro.t()
+
+  @doc """
+  Same as `pgettext(msgctxt, msgid, %{})`.
+
+  See also `Gettext.pgettext/4`.
+  """
+  @macrocallback pgettext(msgctxt :: String.t(), msgid :: String.t()) :: Macro.t()
+
+  @doc """
+  Same as `dgettext("default", msgid, %{})`, but will use a per-backend
+  configured default domain if provided.
 
   See also `Gettext.gettext/3`.
   """
@@ -113,6 +153,37 @@ defmodule Gettext.Backend do
   See also `Gettext.gettext/3`.
   """
   @macrocallback gettext(msgid :: String.t()) :: Macro.t()
+
+  @doc """
+  Translates the given plural translation (`msgid` + `msgid_plural`) with the given context (`msgctxt`)
+  in the given `domain`.
+
+  `n` is an integer used to determine how to pluralize the
+  translation. `bindings` is a map of bindings to support interpolation.
+
+  See also `Gettext.dpngettext/7`.
+  """
+  @macrocallback dpngettext(
+                   domain :: Macro.t(),
+                   msgctxt :: String.t(),
+                   msgid :: String.t(),
+                   msgid_plural :: String.t(),
+                   n :: Macro.t(),
+                   bindings :: Macro.t()
+                 ) :: Macro.t()
+
+  @doc """
+  Same as `dpngettext(domain, msgctxt, msgid, msgid_plural, n, %{})`.
+
+  See also `Gettext.dpngettext/7`.
+  """
+  @macrocallback dpngettext(
+                   domain :: Macro.t(),
+                   msgctxt :: String.t(),
+                   msgid :: String.t(),
+                   msgid_plural :: String.t(),
+                   n :: Macro.t()
+                 ) :: Macro.t()
 
   @doc """
   Translates the given plural translation (`msgid` + `msgid_plural`) in the
@@ -144,7 +215,36 @@ defmodule Gettext.Backend do
                  ) :: Macro.t()
 
   @doc """
-  Same as `dngettext("default", msgid, msgid_plural, n, bindings)`.
+  Translates the given plural translation (`msgid` + `msgid_plural`) with the given context (`msgctxt`).
+
+  `n` is an integer used to determine how to pluralize the
+  translation. `bindings` is a map of bindings to support interpolation.
+
+  See also `Gettext.pngettext/6`.
+  """
+  @macrocallback pngettext(
+                   msgctxt :: String.t(),
+                   msgid :: String.t(),
+                   msgid_plural :: String.t(),
+                   n :: Macro.t(),
+                   bindings :: Macro.t()
+                 ) :: Macro.t()
+
+  @doc """
+  Same as `pngettext(msgctxt, msgid, msgid_plural, n, %{})`.
+
+  See also `Gettext.pngettext/6`.
+  """
+  @macrocallback pngettext(
+                   msgctxt :: String.t(),
+                   msgid :: String.t(),
+                   msgid_plural :: String.t(),
+                   n :: Macro.t()
+                 ) :: Macro.t()
+
+  @doc """
+  Same as `dngettext("default", msgid, msgid_plural, n, bindings)`, but will
+  use a per-backend configured default domain if provided.
 
   See also `Gettext.ngettext/5`.
   """
@@ -207,7 +307,8 @@ defmodule Gettext.Backend do
                  ) :: Macro.t()
 
   @doc """
-  Same as `dngettext_noop("default", msgid, mgsid_plural)`.
+  Same as `dngettext_noop("default", msgid, mgsid_plural)`, but will use a
+  per-backend configured default domain if provided.
   """
   @macrocallback ngettext_noop(msgid :: String.t(), msgid_plural :: String.t()) :: Macro.t()
 

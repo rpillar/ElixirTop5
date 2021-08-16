@@ -1,23 +1,56 @@
 defmodule Postgrex.Interval do
   @moduledoc """
-  Struct for Postgres interval.
+  Struct for PostgreSQL `interval`.
 
   ## Fields
 
     * `months`
     * `days`
     * `secs`
+    * `microsecs`
 
   """
 
-  @type t :: %__MODULE__{months: integer, days: integer, secs: integer}
+  @type t :: %__MODULE__{months: integer, days: integer, secs: integer, microsecs: integer}
 
-  defstruct months: 0, days: 0, secs: 0
+  defstruct months: 0, days: 0, secs: 0, microsecs: 0
+
+  def compare(
+        %__MODULE__{months: m1, days: d1, secs: s1, microsecs: ms1},
+        %__MODULE__{months: m2, days: d2, secs: s2, microsecs: ms2}
+      ) do
+    t1 = {m1, d1, s1, ms1}
+    t2 = {m2, d2, s2, ms2}
+
+    cond do
+      t1 > t2 -> :gt
+      t1 < t2 -> :lt
+      true -> :eq
+    end
+  end
+
+  def to_string(%__MODULE__{months: months, days: days, secs: secs, microsecs: microsecs}) do
+    optional_interval(months, :month) <>
+      optional_interval(days, :day) <>
+      Integer.to_string(secs) <>
+      optional_microsecs(microsecs) <>
+      " seconds"
+  end
+
+  defp optional_interval(0, _), do: ""
+  defp optional_interval(1, key), do: "1 #{key}, "
+  defp optional_interval(n, key), do: "#{n} #{key}s, "
+
+  defp optional_microsecs(0),
+    do: ""
+
+  defp optional_microsecs(ms),
+    do: "." <> (ms |> Integer.to_string() |> String.pad_leading(6, "0"))
 end
 
 defmodule Postgrex.Range do
   @moduledoc """
-  Struct for Postgres range.
+  Struct for PostgreSQL `range`.
 
   ## Fields
 
@@ -40,7 +73,7 @@ end
 
 defmodule Postgrex.INET do
   @moduledoc """
-  Struct for Postgres inet/cidr.
+  Struct for PostgreSQL `inet` / `cidr`.
 
   ## Fields
 
@@ -56,7 +89,7 @@ end
 
 defmodule Postgrex.MACADDR do
   @moduledoc """
-  Struct for Postgres macaddr.
+  Struct for PostgreSQL `macaddr`.
 
   ## Fields
 
@@ -73,7 +106,7 @@ end
 
 defmodule Postgrex.Point do
   @moduledoc """
-  Struct for Postgres point.
+  Struct for PostgreSQL `point`.
 
   ## Fields
 
@@ -89,7 +122,7 @@ end
 
 defmodule Postgrex.Polygon do
   @moduledoc """
-  Struct for Postgres polygon.
+  Struct for PostgreSQL `polygon`.
 
   ## Fields
 
@@ -104,9 +137,9 @@ end
 
 defmodule Postgrex.Line do
   @moduledoc """
-  Struct for Postgres line.
+  Struct for PostgreSQL `line`.
 
-  Note, lines are stored in Postgres in the form `{a, b, c}`, which
+  Note, lines are stored in PostgreSQL in the form `{a, b, c}`, which
   parameterizes a line as `a*x + b*y + c = 0`.
 
   ## Fields
@@ -124,7 +157,7 @@ end
 
 defmodule Postgrex.LineSegment do
   @moduledoc """
-  Struct for Postgres line segment.
+  Struct for PostgreSQL `lseg`.
 
   ## Fields
 
@@ -140,7 +173,7 @@ end
 
 defmodule Postgrex.Box do
   @moduledoc """
-  Struct for Postgres rectangular box.
+  Struct for PostgreSQL `box`.
 
   ## Fields
 
@@ -159,7 +192,7 @@ end
 
 defmodule Postgrex.Path do
   @moduledoc """
-  Struct for Postgres path.
+  Struct for PostgreSQL `path`.
 
   ## Fields
 
@@ -175,7 +208,7 @@ end
 
 defmodule Postgrex.Circle do
   @moduledoc """
-  Struct for Postgres circle.
+  Struct for PostgreSQL `circle`.
 
   ## Fields
 
@@ -190,7 +223,7 @@ end
 
 defmodule Postgrex.Lexeme do
   @moduledoc """
-  Struct for Postgres Lexeme (A Tsvector type is composed of multiple lexemes)
+  Struct for PostgreSQL `lexeme`.
 
   ## Fields
 

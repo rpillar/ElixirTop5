@@ -69,7 +69,7 @@ config :phoenix, :plug_init_mode, :runtime
 # Configure your database
 config :top5_2, Top52.Repo,
   username: "postgres",
-  password: "zsawq21q",
+  password: "postgres",
   database: "top5_2_dev",
   hostname: "localhost",
   pool_size: 10

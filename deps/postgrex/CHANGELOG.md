@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.15.10 (2021-07-27)
+
+* Enhancements
+  * Define child_spec for Postgrex.Notifications
+  * Improve error handling when using multiple endpoints
+* Bug fixes
+  * Fix dialyzer warnings
+  * Fix invalid type error after failover
+
+## v0.15.9 (2021-04-24)
+
+* Enhancements
+  * Support the new `:endpoints` and `:target_server_type` to make it faster to rotate across multiple instances in cases of failovers
+* Bug fixes
+  * Do not warn on undefined JSON library
+  * Fix bug when a message which is not a row description, data row, command completion or error message occurs and there is buffer remaining to be processed
+
+## v0.15.8 (2021-01-19)
+
+* Bug fixes
+  * Make sure scram authentication method works on Erlang/OTP 24
+
+## v0.15.7 (2020-10-17)
+
+* Enhancements
+  * Add `compare` and `to_string` to `Postgrex.Interval`
+* Bug fixes
+  * Allow deallocated queries to be re-prepared
+
+## v0.15.6 (2020-09-21)
+
+* Enhancements
+  * Support Decimal 2.0
+* Bug fixes
+  * Do not keep credentials in state in `Postgrex.Notifications`
+
+## v0.15.5 (2020-06-03)
+
+* Enhancements
+  * Support optional decoding of infinite timestamps
+* Bug fixes
+  * Remove cache statements that cannot be described from cache when on a savepoint transaction (such as when inside the SQL sandbox)
+
+## v0.15.4 (2020-05-09)
+
+* Enhancements
+  * Fix warnings on Elixir v1.11.0-dev
+
+## v0.15.3 (2019-12-11)
+
+* Enhancements
+  * Allow dynamic connection configuration with the `:configure` for notifications
+  * Add `:auto_reconnect` option for notifications
+  * Accept `listen` commands even if the notifications connection is down or yet to first connect
+
+* Bug fixes
+  * Encode empty arrays in a mechanism compatible with CockroachDB
+  * Cleanly terminate connection started with a socket
+
+## v0.15.2 (2019-10-08)
+
+* Enhancements
+  * Improve performance of the bootstrap query
+
+## v0.15.1 (2019-09-16)
+
+* Enhancements
+  * Add support for microseconds in Postgrex.Interval
+  * Reduce bootstrap log message to debug and clarify error message
+
+## v0.15.0 (2019-07-18)
+
+Postgrex v0.15+ requires Elixir v1.6+.
+
+* Enhancements
+  * Filter bootstrap more efficiently by avoiding loading tables information on startup
+  * Only bootstrap new oids during describe: this means reconnects don't run a bootstrap
+    query and describe runs minimal query
+  * Parse Postgrex 12beta new version format
+  * Raise error when :ssl is required and not started in child_spec/1
+
+* Bug fixes
+  * Don't encode DateTime, NaiveDateTime or Time unless Calendar.ISO
+
+## v0.14.3 (2019-05-08)
+
+* Enhancements
+  * Make bootstrap query compatible with CockroachDB 19.1
+  * Improve error message when encoding bad tuple
+
 ## v0.14.2 (2019-04-12)
 
 * Bug fixes
@@ -20,11 +110,11 @@
   * Add `:cache_statement` to `Postgrex.query/4` as a built-in statement cache
   * Support scram-sha-256 authentication from PostgreSQL 10
   * Add `Postgrex.prepare_execute/4`
-  * Automatically reprepare queries that faild to encode due to a database type change
+  * Automatically re-prepare queries that failed to encode due to a database type change
 
 * Backwards incompatible changes
   * Invoke `encode_to_iodata!` instead of `encode!` in JSON encoder
-  * Remove Postgrex.CIDR and use Postgrex.INET to encode both inet/cidr (as Postgres may perform implicit/explicit casting at any time)
+  * Remove Postgrex.CIDR and use Postgrex.INET to encode both inet/cidr (as PostgreSQL may perform implicit/explicit casting at any time)
   * Postgrex.Time, Postgrex.Date and Postgrex.Timestamp were deprecated and now have been effectively removed
   * `Postgrex.execute/4` now always returns the prepared query
   * `:pool_timeout` is removed in favor of `:queue_target` and `:queue_interval`. See `DBConnection.start_link/2` for more information
@@ -68,13 +158,13 @@
 
 ## v0.13.0 (2016-12-17)
 
-* Enchancements
+* Enhancements
   * Support built-in geometry types
   * Fallback to `PGDATABASE` system env for the database
   * Support `bit` and `varbit` types
   * Add postgres error code to error messages
   * Support unprepared when using a stream
-  * `:connect_timeout` and `:handshake_timeout` to configure tcp connect and handshake timeouts
+  * `:connect_timeout` and `:handshake_timeout` to configure TCP connect and handshake timeouts
   * Improve numeric encode/decode
 
 * Bug fixes
@@ -93,7 +183,7 @@
 
 ## v0.12.1 (2016-09-29)
 
-* Enchancements
+* Enhancements
   * Support special "char" type
 
 * Bug fixes
@@ -220,7 +310,7 @@
   * Add extensions
   * Encode/decode ranges generically
   * Add bounds when encoding integer types to error instead of overflowing the integer
-  * Log unhandled Postgres errors (when it cant be replied to anyone)
+  * Log unhandled PostgreSQL errors (when it cant be replied to anyone)
   * Add support for enum types
   * Add support for citext type
   * Add microseconds to times and timestamps
@@ -231,7 +321,7 @@
   * Remove encoder, decoder and formatter functions, use extensions instead
   * Use structs for dates, times, timestamps, interval and ranges
   * Change the default timeout for all operations to 5000ms
-  * Show Postgres error codes as their names instead
+  * Show PostgreSQL error codes as their names instead
 
 ## v0.7.0 (2015-01-20)
 

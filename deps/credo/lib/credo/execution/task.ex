@@ -49,23 +49,18 @@ defmodule Credo.Execution.Task do
     old_parent_task = exec.parent_task
     old_current_task = exec.current_task
 
-    exec = Execution.set_parent_and_current_task(exec, exec.current_task, task)
+    exec =
+      exec
+      |> Execution.set_parent_and_current_task(exec.current_task, task)
+      |> task.call(opts)
+      |> Execution.ensure_execution_struct("#{task}.call/2")
 
-    case task.call(exec, opts) do
-      %Execution{halted: false} = exec ->
-        exec
-        |> Execution.set_parent_and_current_task(old_parent_task, old_current_task)
-
-      %Execution{halted: true} = exec ->
-        exec
-        |> task.error(opts)
-        |> Execution.set_parent_and_current_task(old_parent_task, old_current_task)
-
-      value ->
-        # TODO: improve message
-        IO.warn("Expected task to return %Credo.Execution{}, got: #{inspect(exec)}")
-
-        value
+    if exec.halted do
+      exec
+      |> task.error(opts)
+      |> Execution.set_parent_and_current_task(old_parent_task, old_current_task)
+    else
+      Execution.set_parent_and_current_task(exec, old_parent_task, old_current_task)
     end
   end
 
@@ -97,28 +92,12 @@ defmodule Credo.Execution.Task do
     exec
   end
 
-  defp log(:call_start, {:task_group, _exec, task_group, _opts}) do
-    Logger.info("Calling #{task_group} ...")
-  end
-
   defp log(:call_start, {:task, _exec, task, _opts}) do
     Logger.info("Calling #{task} ...")
   end
 
-  defp log(:call_start, context_tuple) do
-    Logger.info("Calling #{inspect(context_tuple)} ...")
-  end
-
-  defp log(:call_end, {:task_group, _exec, task_group, _opts}, time) do
-    Logger.info("Finished #{task_group} in #{format_time(time)} ...")
-  end
-
   defp log(:call_end, {:task, _exec, task, _opts}, time) do
     Logger.info("Finished #{task} in #{format_time(time)} ...")
-  end
-
-  defp log(:call_end, context_tuple, time) do
-    Logger.info("Finished #{inspect(context_tuple)} in #{format_time(time)} ...")
   end
 
   defp format_time(time) do

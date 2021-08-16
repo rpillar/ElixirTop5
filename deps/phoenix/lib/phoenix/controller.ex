@@ -41,6 +41,9 @@ defmodule Phoenix.Controller do
     * `:log` - the level to log. When false, disables controller
       logging
 
+    * `:put_default_views` - controls whether the default view
+      and layout should be set or not
+
   ## Connection
 
   A controller by default provides many convenience functions for
@@ -167,8 +170,10 @@ defmodule Phoenix.Controller do
 
       use Phoenix.Controller.Pipeline, opts
 
-      plug :put_new_layout, {Phoenix.Controller.__layout__(__MODULE__, opts), :app}
-      plug :put_new_view, Phoenix.Controller.__view__(__MODULE__)
+      if Keyword.get(opts, :put_default_views, true) do
+        plug :put_new_layout, {Phoenix.Controller.__layout__(__MODULE__, opts), :app}
+        plug :put_new_view, Phoenix.Controller.__view__(__MODULE__)
+      end
     end
   end
 
@@ -227,7 +232,7 @@ defmodule Phoenix.Controller do
       end
   """
   defmacro action_fallback(plug) do
-    Phoenix.Controller.Pipeline.__action_fallback__(plug)
+    Phoenix.Controller.Pipeline.__action_fallback__(plug, __CALLER__)
   end
 
   @doc """
@@ -382,6 +387,10 @@ defmodule Phoenix.Controller do
   For security, `:to` only accepts paths. Use the `:external`
   option to redirect to any URL.
 
+  The response will be sent with the status code defined within
+  the connection, via `Plug.Conn.put_status/2`. If no status
+  code is set, a 302 response is sent.
+
   ## Examples
 
       iex> redirect(conn, to: "/login")
@@ -488,25 +497,25 @@ defmodule Phoenix.Controller do
   @spec put_layout(Plug.Conn.t, {atom, binary | atom} | atom | binary | false) :: Plug.Conn.t
   def put_layout(%Plug.Conn{state: state} = conn, layout) do
     if state in @unsent do
-      do_put_layout(conn, layout)
+      do_put_layout(conn, :phoenix_layout, layout)
     else
       raise AlreadySentError
     end
   end
 
-  defp do_put_layout(conn, false) do
-    put_private(conn, :phoenix_layout, false)
+  defp do_put_layout(conn, private_key, false) do
+    put_private(conn, private_key, false)
   end
 
-  defp do_put_layout(conn, {mod, layout}) when is_atom(mod) do
-    put_private(conn, :phoenix_layout, {mod, layout})
+  defp do_put_layout(conn, private_key, {mod, layout}) when is_atom(mod) do
+    put_private(conn, private_key, {mod, layout})
   end
 
-  defp do_put_layout(conn, layout) when is_binary(layout) or is_atom(layout) do
+  defp do_put_layout(conn, private_key, layout) when is_binary(layout) or is_atom(layout) do
     update_in conn.private, fn private ->
-      case Map.get(private, :phoenix_layout, false) do
-        {mod, _} -> Map.put(private, :phoenix_layout, {mod, layout})
-        false    -> raise "cannot use put_layout/2 with atom/binary when layout is false, use a tuple instead"
+      case Map.get(private, private_key, false) do
+        {mod, _} -> Map.put(private, private_key, {mod, layout})
+        false    -> raise "cannot use put_layout/2  or put_root_layout/2 with atom/binary when layout is false, use a tuple instead"
       end
     end
   end
@@ -521,6 +530,47 @@ defmodule Phoenix.Controller do
       when (is_tuple(layout) and tuple_size(layout) == 2) or layout == false do
     if state in @unsent do
       update_in conn.private, &Map.put_new(&1, :phoenix_layout, layout)
+    else
+      raise AlreadySentError
+    end
+  end
+
+  @doc """
+  Stores the root layout for rendering.
+
+  Like `put_layout/2`, the layout must be a tuple,
+  specifying the layout view and the layout name, or false.
+
+  In case a previous layout is set, `put_root_layout` also
+  accepts the layout name to be given as a string or as an atom. If a
+  string, it must contain the format. Passing an atom means the layout
+  format will be found at rendering time, similar to the template in
+  `render/3`. It can also be set to `false`. In this case, no layout
+  would be used.
+
+  ## Examples
+
+      iex> root_layout(conn)
+      false
+
+      iex> conn = put_root_layout conn, {AppView, "root.html"}
+      iex> root_layout(conn)
+      {AppView, "root.html"}
+
+      iex> conn = put_root_layout conn, "bare.html"
+      iex> root_layout(conn)
+      {AppView, "bare.html"}
+
+      iex> conn = put_root_layout conn, :bare
+      iex> root_layout(conn)
+      {AppView, :bare}
+
+  Raises `Plug.Conn.AlreadySentError` if `conn` is already sent.
+  """
+  @spec put_root_layout(Plug.Conn.t, {atom, binary | atom} | atom | binary | false) :: Plug.Conn.t
+  def put_root_layout(%Plug.Conn{state: state} = conn, layout) do
+    if state in @unsent do
+      do_put_layout(conn, :phoenix_root_layout, layout)
     else
       raise AlreadySentError
     end
@@ -561,6 +611,12 @@ defmodule Phoenix.Controller do
   """
   @spec layout(Plug.Conn.t) :: {atom, String.t | atom} | false
   def layout(conn), do: conn.private |> Map.get(:phoenix_layout, false)
+
+  @doc """
+  Retrieves the current root layout.
+  """
+  @spec root_layout(Plug.Conn.t) :: {atom, String.t | atom} | false
+  def root_layout(conn), do: conn.private |> Map.get(:phoenix_root_layout, false)
 
   @doc """
   Render the given template or the default template
@@ -681,14 +737,14 @@ defmodule Phoenix.Controller do
       raise "cannot render template #{inspect template} because conn.params[\"_format\"] is not set. " <>
             "Please set `plug :accepts, ~w(html json ...)` in your pipeline."
 
-    instrument_render_and_send(conn, format, template, assigns)
+    render_and_send(conn, format, template, assigns)
   end
 
   def render(conn, template, assigns)
       when is_binary(template) and (is_map(assigns) or is_list(assigns)) do
     case Path.extname(template) do
       "." <> format ->
-        instrument_render_and_send(conn, format, template, assigns)
+        render_and_send(conn, format, template, assigns)
       "" ->
         raise "cannot render template #{inspect template} without format. Use an atom if the " <>
               "template format is meant to be set dynamically based on the request format"
@@ -701,19 +757,7 @@ defmodule Phoenix.Controller do
     render(conn, view, template, [])
   end
 
-  @doc """
-  WARNING: This function is deprecated in favor of `render/3` + `put_view/2`.
-
-  A shortcut that renders the given template in the given view.
-
-  Equivalent to:
-
-      conn
-      |> put_view(view)
-      |> render(template, assigns)
-
-  """
-  @spec render(Plug.Conn.t, atom, atom | binary, Keyword.t | map) :: Plug.Conn.t
+  @doc false
   def render(conn, view, template, assigns)
       when is_atom(view) and (is_binary(template) or is_atom(template)) do
     IO.warn "#{__MODULE__}.render/4 with a view is deprecated, see the documentation for render/3 for an alternative"
@@ -722,38 +766,39 @@ defmodule Phoenix.Controller do
     |> render(template, assigns)
   end
 
-  @doc false
-  def __put_render__(conn, view, template, format, assigns) do
-    content_type = MIME.type(format)
-    conn = prepare_assigns(conn, assigns, template, format)
-    data = Phoenix.View.render_to_iodata(view, template, Map.put(conn.assigns, :conn, conn))
-
-    conn
-    |> ensure_resp_content_type(content_type)
-    |> resp(conn.status || 200, data)
-  end
-
-  defp instrument_render_and_send(conn, format, template, assigns) do
+  defp render_and_send(conn, format, template, assigns) do
     template = template_name(template, format)
-
     view =
       Map.get(conn.private, :phoenix_view) ||
         raise "a view module was not specified, set one with put_view/2"
 
-    metadata = %{view: view, template: template, format: format, conn: conn}
+    layout_format? = format in layout_formats(conn)
+    conn = prepare_assigns(conn, assigns, template, format, layout_format?)
+    data = render_with_layouts(conn, view, template, format, layout_format?)
 
-    conn =
-      Phoenix.Endpoint.instrument(conn, :phoenix_controller_render, metadata, fn ->
-        __put_render__(conn, view, template, format, assigns)
-      end)
-
-    send_resp(conn)
+    conn
+    |> ensure_resp_content_type(MIME.type(format))
+    |> send_resp(conn.status || 200, data)
   end
 
-  defp prepare_assigns(conn, assigns, template, format) do
+  defp render_with_layouts(conn, view, template, format, layout_format?) do
+    render_assigns = Map.put(conn.assigns, :conn, conn)
+
+    case layout_format? and root_layout(conn) do
+      {layout_mod, layout_tpl} ->
+        inner = Phoenix.View.render(view, template, render_assigns)
+        root_assigns = render_assigns |> Map.put(:inner_content, inner) |> Map.delete(:layout)
+        Phoenix.View.render_to_iodata(layout_mod, template_name(layout_tpl, format), root_assigns)
+
+      false ->
+        Phoenix.View.render_to_iodata(view, template, render_assigns)
+    end
+  end
+
+  defp prepare_assigns(conn, assigns, template, format, layout_format?) do
     assigns = to_map(assigns)
     layout =
-      case layout(conn, assigns, format) do
+      case layout_format? and assigns_layout(conn, assigns) do
         {mod, layout} -> {mod, template_name(layout, format)}
         false -> false
       end
@@ -767,14 +812,10 @@ defmodule Phoenix.Controller do
     end)
   end
 
-  defp layout(conn, assigns, format) do
-    if format in layout_formats(conn) do
-      case Map.fetch(assigns, :layout) do
-        {:ok, layout} -> layout
-        :error -> layout(conn)
-      end
-    else
-      false
+  defp assigns_layout(conn, assigns) do
+    case Map.fetch(assigns, :layout) do
+      {:ok, layout} -> layout
+      :error -> layout(conn)
     end
   end
 
@@ -802,7 +843,7 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
-  Puts the URL or `%URI{}` to be used for route generation.
+  Puts the url string or `%URI{}` to be used for route generation.
 
   This function overrides the default URL generation pulled
   from the `%Plug.Conn{}`'s endpoint configuration.
@@ -820,8 +861,8 @@ defmodule Phoenix.Controller do
 
   Now when you call `Routes.some_route_url(conn, ...)`, it will use
   the router url set above. Keep in mind that, if you want to generate
-  routes to the current domain, it is preferred to use `Routes.some_route_path`
-  helpers, as those are always relative.
+  routes to the *current* domain, it is preferred to use
+  `Routes.some_route_path` helpers, as those are always relative.
   """
   def put_router_url(conn, %URI{} = uri) do
     put_private(conn, :phoenix_router_url, uri)
@@ -831,7 +872,26 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
+  Puts the URL or `%URI{}` to be used for the static url generation.
+
+  Using this function on a `%Plug.Conn{}` struct tells `static_url/2` to use
+  the given information for URL generation instead of the the `%Plug.Conn{}`'s
+  endpoint configuration (much like `put_router_url/2` but for static URLs).
+  """
+  def put_static_url(conn, %URI{} = uri) do
+    put_private(conn, :phoenix_static_url, uri)
+  end
+  def put_static_url(conn, url) when is_binary(url) do
+    put_private(conn, :phoenix_static_url, url)
+  end
+
+  @doc """
   Puts the format in the connection.
+
+  This format is used when rendering a template as an atom.
+  For example, `render(conn, :foo)` will render `"foo.FORMAT"`
+  where the format is the one set here. The default format
+  is typically set from the negotiation done in `accepts/2`.
 
   See `get_format/1` for retrieval.
   """
@@ -839,6 +899,11 @@ defmodule Phoenix.Controller do
 
   @doc """
   Returns the request format, such as "json", "html".
+
+  This format is used when rendering a template as an atom.
+  For example, `render(conn, :foo)` will render `"foo.FORMAT"`
+  where the format is the one set here. The default format
+  is typically set from the negotiation done in `accepts/2`.
   """
   def get_format(conn) do
     conn.private[:phoenix_format] || conn.params["_format"]
@@ -866,10 +931,20 @@ defmodule Phoenix.Controller do
     * `:content_type` - the content type of the file or binary
       sent as download. It is automatically inferred from the
       filename extension
+    * `:disposition` - specifies dispositon type
+      (`:attachment` or `:inline`). If `:attachment` was used,
+      user will be prompted to save the file. If `:inline` was used,
+      the browser will attempt to open the file.
+      Defaults to `:attachment`.
     * `:charset` - the charset of the file, such as "utf-8".
       Defaults to none
     * `:offset` - the bytes to offset when reading. Defaults to `0`
     * `:length` - the total bytes to read. Defaults to `:all`
+    * `:encode` - encodes the filename using `URI.encode_www_form/1`.
+      Defaults to `true`. When `false`, disables encoding. If you
+      disable encoding, you need to guarantee there are no special
+      characters in the filename, such as quotes, newlines, etc.
+      Otherwise you can expose your application to security attacks
 
   ## Examples
 
@@ -911,12 +986,20 @@ defmodule Phoenix.Controller do
 
   defp prepare_send_download(conn, filename, opts) do
     content_type = opts[:content_type] || MIME.from_path(filename)
-    encoded_filename = URI.encode_www_form(filename)
+    encoded_filename = encode_filename(filename, Keyword.get(opts, :encode, true))
+    disposition_type = get_disposition_type(Keyword.get(opts, :disposition, :attachment))
     warn_if_ajax(conn)
     conn
     |> put_resp_content_type(content_type, opts[:charset])
-    |> put_resp_header("content-disposition", ~s[attachment; filename="#{encoded_filename}"])
+    |> put_resp_header("content-disposition", ~s[#{disposition_type}; filename="#{encoded_filename}"])
   end
+
+  defp encode_filename(filename, false), do: filename
+  defp encode_filename(filename, true), do: URI.encode_www_form(filename)
+
+  defp get_disposition_type(:attachment), do: "attachment"
+  defp get_disposition_type(:inline), do: "inline"
+  defp get_disposition_type(other), do: raise ArgumentError, "expected :disposition to be :attachment or :inline, got: #{inspect(other)}"
 
   defp ajax?(conn) do
     case get_req_header(conn, "x-requested-with") do
@@ -1002,22 +1085,26 @@ defmodule Phoenix.Controller do
 
   It sets the following headers:
 
-      * `x-frame-options` - set to SAMEORIGIN to avoid clickjacking
-        through iframes unless in the same origin
-      * `x-content-type-options` - set to nosniff. This requires
-        script and style tags to be sent with proper content type
-      * `x-xss-protection` - set to "1; mode=block" to improve XSS
-        protection on both Chrome and IE
-      * `x-download-options` - set to noopen to instruct the browser
-        not to open a download directly in the browser, to avoid
-        HTML files rendering inline and accessing the security
-        context of the application (like critical domain cookies)
-      * `x-permitted-cross-domain-policies` - set to none to restrict
-        Adobe Flash Player’s access to data
-      * `cross-origin-window-policy` - set to deny to avoid window
-        control attacks
+    * `x-frame-options` - set to SAMEORIGIN to avoid clickjacking
+      through iframes unless in the same origin
+    * `x-content-type-options` - set to nosniff. This requires
+      script and style tags to be sent with proper content type
+    * `x-xss-protection` - set to "1; mode=block" to improve XSS
+      protection on both Chrome and IE
+    * `x-download-options` - set to noopen to instruct the browser
+      not to open a download directly in the browser, to avoid
+      HTML files rendering inline and accessing the security
+      context of the application (like critical domain cookies)
+    * `x-permitted-cross-domain-policies` - set to none to restrict
+      Adobe Flash Player’s access to data
+    * `cross-origin-window-policy` - set to deny to avoid window
+      control attacks
 
   A custom headers map may also be given to be merged with defaults.
+  It is recommended for custom header keys to be in lowercase, to avoid sending
+  duplicate keys in a request.
+  Additionally, responses with mixed-case headers served over HTTP/2 are not
+  considered valid by common clients, resulting in dropped responses.
   """
   def put_secure_browser_headers(conn, headers \\ %{})
   def put_secure_browser_headers(conn, []) do
@@ -1066,6 +1153,14 @@ defmodule Phoenix.Controller do
   considered to be the format desired by the client. If no
   "_format" parameter is available, this function will parse
   the "accept" header and find a matching format accordingly.
+
+  This function is useful when you may want to serve different
+  content-types (such as JSON and HTML) from the same routes.
+  However, if you always have distinct routes, you can also
+  disable content negotiation and simply hardcode your format
+  of choice in your route pipelines:
+
+      plug :put_format, "html"
 
   It is important to notice that browsers have historically
   sent bad accept headers. For this reason, this function will
@@ -1238,22 +1333,43 @@ defmodule Phoenix.Controller do
   Fetches the flash storage.
   """
   def fetch_flash(conn, _opts \\ []) do
-    session_flash = get_session(conn, "phoenix_flash")
-    conn = persist_flash(conn, session_flash || %{})
+    if Map.get(conn.private, :phoenix_flash) do
+      conn
+    else
+      session_flash = get_session(conn, "phoenix_flash")
+      conn = persist_flash(conn, session_flash || %{})
 
-    register_before_send conn, fn conn ->
-      flash = conn.private.phoenix_flash
-      flash_size = map_size(flash)
+      register_before_send conn, fn conn ->
+        flash = conn.private.phoenix_flash
+        flash_size = map_size(flash)
 
-      cond do
-        is_nil(session_flash) and flash_size == 0 ->
-          conn
-        flash_size > 0 and conn.status in 300..308 ->
-          put_session(conn, "phoenix_flash", flash)
-        true ->
-          delete_session(conn, "phoenix_flash")
+        cond do
+          is_nil(session_flash) and flash_size == 0 ->
+            conn
+          flash_size > 0 and conn.status in 300..308 ->
+            put_session(conn, "phoenix_flash", flash)
+          true ->
+            delete_session(conn, "phoenix_flash")
+        end
       end
     end
+  end
+
+  @doc """
+  Merges a map into the flash.
+
+  Returns the updated connection.
+
+  ## Examples
+
+      iex> conn = merge_flash(conn, info: "Welcome Back!")
+      iex> get_flash(conn, :info)
+      "Welcome Back!"
+
+  """
+  def merge_flash(conn, enumerable) do
+    map = for {k, v} <- enumerable, into: %{}, do: {flash_key(k), v}
+    persist_flash(conn, Map.merge(get_flash(conn), map))
   end
 
   @doc """
@@ -1291,7 +1407,7 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
-  Returns a message from flash by `key`.
+  Returns a message from flash by `key` (or `nil` if no message is available for `key`).
 
   ## Examples
 
@@ -1340,12 +1456,26 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
-  Returns the current request path, with and without query params.
+  Returns the current request path with its default query parameters:
 
-  By default, the connection's query params are included in
-  the generated path. Custom query params may be used instead
-  by providing a map of your own params. You may also retrieve
-  only the request path by passing an empty map of params.
+      iex> current_path(conn)
+      "/users/123?existing=param"
+
+  See `current_path/2` to override the default parameters.
+  """
+  def current_path(%Plug.Conn{query_string: ""} = conn) do
+    conn.request_path
+  end
+
+  def current_path(%Plug.Conn{query_string: query_string} = conn) do
+    conn.request_path <> "?" <> query_string
+  end
+
+  @doc """
+  Returns the current path with the given query parameters.
+
+  You may also retrieve only the request path by passing an
+  empty map of params.
 
   ## Examples
 
@@ -1362,12 +1492,6 @@ defmodule Phoenix.Controller do
       "/users/123"
 
   """
-  def current_path(%Plug.Conn{query_string: ""} = conn) do
-    conn.request_path
-  end
-  def current_path(%Plug.Conn{query_string: query_string} = conn) do
-    conn.request_path <> "?" <> query_string
-  end
   def current_path(%Plug.Conn{} = conn, params) when params == %{} do
     conn.request_path
   end
@@ -1375,8 +1499,20 @@ defmodule Phoenix.Controller do
     conn.request_path <> "?" <> Plug.Conn.Query.encode(params)
   end
 
+  @doc """
+  Returns the current request url with its default query parameters:
+
+      iex> current_url(conn)
+      "https://www.example.com/users/123?existing=param"
+
+  See `current_url/2` to override the default parameters.
+  """
+  def current_url(%Plug.Conn{} = conn) do
+    Phoenix.Router.Helpers.url(router_module(conn), conn) <> current_path(conn)
+  end
+
   @doc ~S"""
-  Returns the current request URL, with and without query params.
+  Returns the current request URL with query params.
 
   The path will be retrieved from the currently requested path via
   `current_path/1`. The scheme, host and others will be received from
@@ -1416,11 +1552,8 @@ defmodule Phoenix.Controller do
       end
 
   However, if you want all generated URLs to always have a certain schema,
-  host, etc, you may invoke `put_router_url/2`.
+  host, etc, you may use `put_router_url/2`.
   """
-  def current_url(%Plug.Conn{} = conn) do
-    Phoenix.Router.Helpers.url(router_module(conn), conn) <> current_path(conn)
-  end
   def current_url(%Plug.Conn{} = conn, %{} = params) do
     Phoenix.Router.Helpers.url(router_module(conn), conn) <> current_path(conn, params)
   end

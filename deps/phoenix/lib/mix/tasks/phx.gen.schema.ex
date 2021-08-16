@@ -100,7 +100,7 @@ defmodule Mix.Tasks.Phx.Gen.Schema do
   @doc false
   def run(args) do
     if Mix.Project.umbrella?() do
-      Mix.raise "mix phx.gen.schema can only be run inside an application directory"
+      Mix.raise "mix phx.gen.schema must be invoked from within your *_web application root directory"
     end
 
     schema = build(args, [])
@@ -162,7 +162,7 @@ defmodule Mix.Tasks.Phx.Gen.Schema do
   @doc false
   def print_shell_instructions(%Schema{} = schema) do
     if schema.migration? do
-      Mix.shell.info """
+      Mix.shell().info """
 
       Remember to update your repository by running migrations:
 

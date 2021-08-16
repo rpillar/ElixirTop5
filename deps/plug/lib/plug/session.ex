@@ -6,7 +6,12 @@ defmodule Plug.Session do
   session have to be fetched with `Plug.Conn.fetch_session/1` before the
   session can be accessed.
 
-  Consider using `Plug.CSRFProtection` when using `Plug.Session`.
+  The session is also lazy. Once configured, a cookie header with the
+  session will only be sent to the client if something is written to the
+  session in the first place.
+
+  When using `Plug.Session`, also consider using `Plug.CSRFProtection`
+  to avoid Cross Site Request Forgery attacks.
 
   ## Session stores
 
@@ -27,6 +32,7 @@ defmodule Plug.Session do
     * `:path` - see `Plug.Conn.put_resp_cookie/4`;
     * `:secure` - see `Plug.Conn.put_resp_cookie/4`;
     * `:http_only` - see `Plug.Conn.put_resp_cookie/4`;
+    * `:same_site` - see `Plug.Conn.put_resp_cookie/4`;
     * `:extra` - see `Plug.Conn.put_resp_cookie/4`;
 
   Additional options can be given to the session store, see the store's
@@ -40,10 +46,11 @@ defmodule Plug.Session do
   alias Plug.Conn
   @behaviour Plug
 
-  @cookie_opts [:domain, :max_age, :path, :secure, :http_only, :extra]
+  @cookie_opts [:domain, :max_age, :path, :secure, :http_only, :extra, :same_site]
 
+  @impl true
   def init(opts) do
-    store = convert_store(Keyword.fetch!(opts, :store))
+    store = Plug.Session.Store.get(Keyword.fetch!(opts, :store))
     key = Keyword.fetch!(opts, :key)
     cookie_opts = Keyword.take(opts, @cookie_opts)
     store_opts = Keyword.drop(opts, [:store, :key] ++ @cookie_opts)
@@ -57,15 +64,9 @@ defmodule Plug.Session do
     }
   end
 
+  @impl true
   def call(conn, config) do
     Conn.put_private(conn, :plug_session_fetch, fetch_session(config))
-  end
-
-  defp convert_store(store) do
-    case Atom.to_string(store) do
-      "Elixir." <> _ -> store
-      reference -> Module.concat(Plug.Session, String.upcase(reference))
-    end
   end
 
   defp fetch_session(config) do

@@ -6,7 +6,40 @@ defmodule Ecto.Migration do
   allowing developers to use Elixir to alter their storage in
   a way that is database independent.
 
-  Here is an example:
+  Migrations typically provide two operations: `up` and `down`,
+  allowing us to migrate the database forward or roll it back
+  in case of errors.
+
+  In order to manage migrations, Ecto creates a table called
+  `schema_migrations` in the database, which stores all migrations
+  that have already been executed. You can configure the name of
+  this table with the `:migration_source` configuration option.
+
+  You can configure a different database for the table that
+  manages your migrations by setting the `:migration_repo`
+  configuration option to a different repository.
+
+  Ecto also locks the `schema_migrations` table when running
+  migrations, guaranteeing two different servers cannot run the same
+  migration at the same time.
+
+  ## Creating your first migration
+
+  Migrations are defined inside the "priv/REPO/migrations" where REPO
+  is the last part of the repository name in underscore. For example,
+  migrations for `MyApp.Repo` would be found in "priv/repo/migrations".
+  For `MyApp.CustomRepo`, it would be found in "priv/custom_repo/migrations".
+
+  Each file in the migrations directory has the following structure:
+
+      NUMBER_NAME.exs
+
+  The NUMBER is a unique number that identifies the migration. It is
+  usually the timestamp of when the migration was created. The NAME
+  must also be unique and it quickly identifies what the migration
+  does. For example, if you need to track the "weather" in your system,
+  you can start a new file at "priv/repo/migrations/20190417140000_add_weather_table.exs"
+  that will have the following contents:
 
       defmodule MyRepo.Migrations.AddWeatherTable do
         use Ecto.Migration
@@ -27,30 +60,55 @@ defmodule Ecto.Migration do
         end
       end
 
-  Note that migrations have `up/0` and `down/0` instructions, where
-  `up/0` applies changes to the database and `down/0` rolls back
-  changes, returning the database schema to a previous state.
+  The `up/0` function is responsible to migrate your database forward.
+  the `down/0` function is executed whenever you want to rollback.
+  The `down/0` function must always do the opposite of `up/0`.
+  Inside those functions, we invoke the API defined in this module,
+  you will find conveniences for managing tables, indexes, columns,
+  references, as well as running custom SQL commands.
 
-  Ecto creates a table (see the `:migration_source` configuration option)
-  in the database in order to keep track of migrations and will add
-  an entry to this table for each migration you define. Ecto also
-  locks the table when adding/removing entries, guaranteeing two
-  different servers cannot run the same migration at the same time.
+  To run a migration, we generally use Mix tasks. For example, you can
+  run the migration above by going to the root of your project and
+  typing:
 
-  Ecto provides some mix tasks to help developers work with migrations:
+      $ mix ecto.migrate
+
+  You can also roll it back by calling:
+
+      $ mix ecto.rollback --step 1
+
+  Note rollback requires us to say how much we want to rollback.
+  On the other hand, `mix ecto.migrate` will always run all pending
+  migrations.
+
+  In practice, we don't create migration files by hand either, we
+  typically use `mix ecto.gen.migration` to generate the file with
+  the proper timestamp and then we just fill in its contents:
+
+      $ mix ecto.gen.migration add_weather_table
+
+  ## Mix tasks
+
+  As seen above, Ecto provides many Mix tasks to help developers work
+  with migrations. We summarize them below:
 
     * `mix ecto.gen.migration` - generates a
       migration that the user can fill in with particular commands
     * `mix ecto.migrate` - migrates a repository
+    * `mix ecto.migrations` - shows all migrations and their status
     * `mix ecto.rollback` - rolls back a particular migration
 
   Run `mix help COMMAND` for more information on a particular command.
+  For a lower level API for running migrations, see `Ecto.Migrator`.
 
   ## Change
 
-  `change/0` is an abstraction that wraps both `up/0` and `down/0` for
-  automatically-reversible migrations. For example, the migration above
-  can be written as:
+  Having to write both `up/0` and `down/0` functions for every
+  migration is tedious and error prone. For this reason, Ecto allows
+  you to defined a `change/0` callback with all of the code you want
+  to execute when migrating and Ecto will automatically figure out
+  the `down/0` for you. For example, the migration above can be
+  written as:
 
       defmodule MyRepo.Migrations.AddWeatherTable do
         use Ecto.Migration
@@ -74,87 +132,51 @@ defmodule Ecto.Migration do
   `change/0` by accepting a pair of plain SQL strings. The first is run on
   forward migrations (`up/0`) and the second when rolling back (`down/0`).
 
-  If `up/0` and `down/0` are implemented in a migration, they take precedence, and
-  `change/0` isn't invoked.
+  If `up/0` and `down/0` are implemented in a migration, they take precedence,
+  and `change/0` isn't invoked.
 
   ## Field Types
 
   The Ecto primitive types are mapped to the appropriate database
-  type by the various database adapters. For example, `:string` is converted to
-  `:varchar`, `:binary` to `:bits` or `:blob`, and so on.
+  type by the various database adapters. For example, `:string` is
+  converted to `:varchar`, `:binary` to `:bytea` or `:blob`, and so on.
 
-  Similarly, you can pass any field type supported by your database
-  as long as it maps to an Ecto type. For instance, you can use `:text`,
-  `:varchar`, or `:char` in your migrations as `add :field_name, :text`.
-  In your Ecto schema, they will all map to the same `:string` type.
+  In particular, note that:
 
-  Remember, atoms can contain arbitrary characters by enclosing in
-  double quotes the characters following the colon. So, if you want to use a
-  field type with database-specific options, you can pass atoms containing
-  these options like `:"int unsigned"`, `:"time without time zone"`, etc.
+    * the `:string` type in migrations by default has a limit of 255 characters.
+      If you need more or less characters, pass the `:size` option, such
+      as `add :field, :string, size: 10`. If you don't want to impose a limit,
+      most databases support a `:text` type or similar
 
-  ## Prefixes
+    * the `:binary` type in migrations by default has no size limit. If you want
+      to impose a limit, pass the `:size` option accordingly. In MySQL, passing
+      the size option changes the underlying field from "blob" to "varbinary"
 
-  Migrations support specifying a table prefix or index prefix which will
-  target either a schema (if using PostgreSQL) or a different database (if using
-  MySQL). If no prefix is provided, the default schema or database is used.
+  Any other type will be given as is to the database. For example, you
+  can use `:text`, `:char`, or `:varchar` as types. Types that have spaces
+  in their names can be wrapped in double quotes, such as `:"int unsigned"`,
+  `:"time without time zone"`, etc.
 
-  Any reference declared in the table migration refers by default to the table
-  with the same declared prefix. The prefix is specified in the table options:
+  ## Executing and flushing
+
+  Instructions inside of migrations are not executed immediately. Instead
+  they are performed after the relevant `up`, `change`, or `down` callback
+  terminates.
+
+  However, in some situations you may want to guarantee that all of the
+  previous steps have been executed before continuing. This is useful when
+  you need to apply a set of changes to the table before continuing with the
+  migration. This can be done with `flush/0`:
 
       def up do
-        create table("weather", prefix: "north_america") do
-          add :city,    :string, size: 40
-          add :temp_lo, :integer
-          add :temp_hi, :integer
-          add :prcp,    :float
-          add :group_id, references(:groups)
-
-          timestamps()
-        end
-
-        create index("weather", [:city], prefix: "north_america")
+        ...
+        flush()
+        ...
       end
 
-  Note: if using MySQL with a prefixed table, you must use the same prefix
-  for the references since cross-database references are not supported.
-
-  When using a prefixed table with either MySQL or PostgreSQL, you must use the
-  same prefix for the index field to ensure that you index the prefix-qualified
-  table.
-
-  ## Transactions
-
-  For PostgreSQL, Ecto always runs migrations inside a transaction, but that's not
-  always desired: for example, you cannot create/drop indexes concurrently inside
-  a transaction. Migrations can be forced to run outside a transaction by setting
-  the `@disable_ddl_transaction` module attribute to `true`. See the section about
-  concurrent in `index/3` for more information.
-
-  ### Transaction Callbacks
-
-  There are use cases that dictate adding some common behavior after beginning a
-  migration transaction, or before commiting that transaction. For instance, one
-  might desire to set a `lock_timeout` for each lock in the transaction.
-
-  Another way these might be leveraged is by defining a custom migration module
-  so that these callbacks will run for *all* of your migrations, if you have special
-  requirements.
-
-      defmodule MyApp.Migration do
-        defmacro __using__(_) do
-          quote do
-            use Ecto.Migration
-
-            def after_begin() do
-              repo().query! "SET lock_timeout TO '5s'", "SET lock_timeout TO '10s'"
-            end
-          end
-        end
-      end
-
-  Then in your migrations you can `use MyApp.Migration` to share this behavior
-  among all your migrations.
+  However `flush/0` will raise if it would be called from `change` function when doing a rollback.
+  To avoid that we recommend to use `execute/2` with anonymous functions instead.
+  For more information and example usage please take a look at `execute/2` function.
 
   ## Comments
 
@@ -186,6 +208,13 @@ defmodule Ecto.Migration do
 
           config :app, App.Repo, migration_primary_key: [name: :uuid, type: :binary_id]
 
+          config :app, App.Repo, migration_primary_key: false
+
+    * `:migration_foreign_key` - By default, Ecto uses the migration_primary_key type
+      for foreign keys when references/2 is used, but you can configure it via:
+
+          config :app, App.Repo, migration_foreign_key: [column: :uuid, type: :binary_id]
+
     * `:migration_timestamps` - By default, Ecto uses the `:naive_datetime` type, but
       you can configure it via:
 
@@ -193,17 +222,90 @@ defmodule Ecto.Migration do
 
     * `:migration_lock` - By default, Ecto will lock the migration table. This allows
       multiple nodes to attempt to run migrations at the same time but only one will
-      succeed. However, this does not play well with other features, such as the
-      `:concurrently` option in PostgreSQL indexes. You can disable the `migration_lock`
-      by setting it to `nil`:
+      succeed. You can disable the `migration_lock` by setting it to `false`
 
-          config :app, App.Repo, migration_lock: nil
+          config :app, App.Repo, migration_lock: false
 
     * `:migration_default_prefix` - Ecto defaults to `nil` for the database prefix for
       migrations, but you can configure it via:
 
           config :app, App.Repo, migration_default_prefix: "my_prefix"
 
+    * `:migration_repo` - The migration repository is where the table managing the
+      migrations will be stored (`migration_source` defines the table name). It defaults
+      to the given repository itself but you can configure it via:
+
+          config :app, App.Repo, migration_repo: App.MigrationRepo
+
+    * `:priv` - the priv directory for the repo with the location of important assets,
+      such as migrations. For a repository named `MyApp.FooRepo`, `:priv` defaults to
+      "priv/foo_repo" and migrations should be placed at "priv/foo_repo/migrations"
+
+    * `:start_apps_before_migration` - A list of applications to be started before
+      running migrations. Used by `Ecto.Migrator.with_repo/3` and the migration tasks:
+
+          config :app, App.Repo, start_apps_before_migration: [:ssl, :some_custom_logger]
+
+  ## Prefixes
+
+  Migrations support specifying a table prefix or index prefix which will
+  target either a schema (if using PostgreSQL) or a different database (if using
+  MySQL). If no prefix is provided, the default schema or database is used.
+
+  Any reference declared in the table migration refers by default to the table
+  with the same declared prefix. The prefix is specified in the table options:
+
+      def up do
+        create table("weather", prefix: "north_america") do
+          add :city,    :string, size: 40
+          add :temp_lo, :integer
+          add :temp_hi, :integer
+          add :prcp,    :float
+          add :group_id, references(:groups)
+
+          timestamps()
+        end
+
+        create index("weather", [:city], prefix: "north_america")
+      end
+
+  Note: if using MySQL with a prefixed table, you must use the same prefix
+  for the references since cross-database references are not supported.
+
+  When using a prefixed table with either MySQL or PostgreSQL, you must use the
+  same prefix for the index field to ensure that you index the prefix-qualified
+  table.
+
+  ## Transaction Callbacks
+
+  If possible, each migration runs inside a transaction. This is true for Postgres,
+  but not true for MySQL, as the latter does not support DDL transactions.
+
+  In some rare cases, you may need to execute some common behavior after beginning
+  a migration transaction, or before committing that transaction. For instance, one
+  might desire to set a `lock_timeout` for each lock in the migration transaction.
+
+  You can do so by defining `c:after_begin/0` and `c:before_commit/0` callbacks to
+  your migration.
+
+  However, if you need do so for every migration module, implement this callback
+  for every migration can be quite repetitive. Luckily, you can handle this by
+  providing your migration module:
+
+      defmodule MyApp.Migration do
+        defmacro __using__(_) do
+          quote do
+            use Ecto.Migration
+
+            def after_begin() do
+              repo().query! "SET lock_timeout TO '5s'", "SET lock_timeout TO '10s'"
+            end
+          end
+        end
+      end
+
+  Then in your migrations you can `use MyApp.Migration` to share this behavior
+  among all your migrations.
   """
 
   @doc """
@@ -236,6 +338,7 @@ defmodule Ecto.Migration do
               unique: false,
               concurrently: false,
               using: nil,
+              include: [],
               where: nil,
               comment: nil,
               options: nil
@@ -248,6 +351,7 @@ defmodule Ecto.Migration do
       unique: boolean,
       concurrently: boolean,
       using: atom | String.t,
+      include: [atom | String.t],
       where: atom | String.t,
       comment: String.t | nil,
       options: String.t
@@ -271,8 +375,12 @@ defmodule Ecto.Migration do
 
     To define a reference in a migration, see `Ecto.Migration.references/2`.
     """
-    defstruct name: nil, prefix: nil, table: nil, column: :id, type: :bigserial, on_delete: :nothing, on_update: :nothing
-    @type t :: %__MODULE__{table: String.t, prefix: atom | nil, column: atom, type: atom, on_delete: atom, on_update: atom}
+    defstruct name: nil, prefix: nil, table: nil, column: :id, type: :bigserial,
+              on_delete: :nothing, on_update: :nothing, validate: true,
+              with: [], match: nil
+    @type t :: %__MODULE__{table: String.t, prefix: atom | nil, column: atom, type: atom,
+                           on_delete: atom, on_update: atom, validate: boolean,
+                           with: list, match: atom | nil}
   end
 
   defmodule Constraint do
@@ -281,9 +389,9 @@ defmodule Ecto.Migration do
 
     To define a constraint in a migration, see `Ecto.Migration.constraint/3`.
     """
-    defstruct name: nil, table: nil, check: nil, exclude: nil, prefix: nil, comment: nil
+    defstruct name: nil, table: nil, check: nil, exclude: nil, prefix: nil, comment: nil, validate: true
     @type t :: %__MODULE__{name: atom, table: String.t, prefix: atom | nil,
-                           check: String.t | nil, exclude: String.t | nil, comment: String.t | nil}
+                           check: String.t | nil, exclude: String.t | nil, comment: String.t | nil, validate: boolean}
   end
 
   defmodule Command do
@@ -306,6 +414,7 @@ defmodule Ecto.Migration do
     quote location: :keep do
       import Ecto.Migration
       @disable_ddl_transaction false
+      @disable_migration_lock false
       @before_compile Ecto.Migration
     end
   end
@@ -313,8 +422,12 @@ defmodule Ecto.Migration do
   @doc false
   defmacro __before_compile__(_env) do
     quote do
-      def __migration__,
-        do: [disable_ddl_transaction: @disable_ddl_transaction]
+      def __migration__ do
+        [
+          disable_ddl_transaction: @disable_ddl_transaction,
+          disable_migration_lock: @disable_migration_lock
+        ]
+      end
     end
   end
 
@@ -353,18 +466,13 @@ defmodule Ecto.Migration do
       table = %Table{} = unquote(object)
       Runner.start_command({unquote(command), Ecto.Migration.__prefix__(table)})
 
-      if table.primary_key do
-        opts = Runner.repo_config(:migration_primary_key, [])
-        opts = Keyword.put(opts, :primary_key, true)
-
-        {name, opts} = Keyword.pop(opts, :name, :id)
-        {type, opts} = Keyword.pop(opts, :type, :bigserial)
-
+      if primary_key = table.primary_key && Ecto.Migration.__primary_key__() do
+        {name, type, opts} = primary_key
         add(name, type, opts)
       end
 
       unquote(block)
-      Runner.end_command
+      Runner.end_command()
       table
     end
   end
@@ -386,7 +494,7 @@ defmodule Ecto.Migration do
       table = %Table{} = unquote(object)
       Runner.start_command({:alter, Ecto.Migration.__prefix__(table)})
       unquote(block)
-      Runner.end_command
+      Runner.end_command()
     end
   end
 
@@ -394,7 +502,7 @@ defmodule Ecto.Migration do
   Creates one of the following:
 
     * an index
-    * a table with only an `:id` field
+    * a table with only the :id primary key
     * a constraint
 
   When reversing (in a `change/0` running backwards), indexes are only dropped
@@ -443,8 +551,9 @@ defmodule Ecto.Migration do
 
   defp do_create(table, command) do
     columns =
-      if table.primary_key do
-        [{:add, :id, :bigserial, primary_key: true}]
+      if primary_key = table.primary_key && Ecto.Migration.__primary_key__() do
+        {name, type, opts} = primary_key
+        [{:add, name, type, opts}]
       else
         []
       end
@@ -511,7 +620,9 @@ defmodule Ecto.Migration do
       creation.
     * `:engine` - customizes the table storage for supported databases. For MySQL,
       the default is InnoDB.
-    * `:prefix` - the prefix for the table.
+    * `:prefix` - the prefix for the table. This prefix will automatically be used
+      for all constraints and references defined for this table unless explicitly
+      overridden in said constraints/references.
     * `:options` - provide custom options that will be appended after the generated
       statement. For example, "WITH", "INHERITS", or "ON COMMIT" clauses.
 
@@ -543,39 +654,39 @@ defmodule Ecto.Migration do
     * `:using` - configures the index type.
     * `:prefix` - specify an optional prefix for the index.
     * `:where` - specify conditions for a partial index.
+    * `:include` - specify fields for a covering index. This is not supported
+      by all databases. For more information on PostgreSQL support, please
+      [read the official docs](https://www.postgresql.org/docs/current/indexes-index-only-scans.html).
 
   ## Adding/dropping indexes concurrently
 
   PostgreSQL supports adding/dropping indexes concurrently (see the
-  [docs](http://www.postgresql.org/docs/9.4/static/sql-createindex.html)).
+  [docs](http://www.postgresql.org/docs/current/static/sql-createindex.html)).
   However, this feature does not work well with the transactions used by
   Ecto to guarantee integrity during migrations.
 
   Therefore, to migrate indexes concurrently, you need to set
-  `@disable_ddl_transaction` in the migration to true, disabling the
-  guarantee that all of the changes in the migration will happen at
-  once:
+  both `@disable_ddl_transaction` and `@disable_migration_lock` to true:
 
       defmodule MyRepo.Migrations.CreateIndexes do
         use Ecto.Migration
         @disable_ddl_transaction true
+        @disable_migration_lock true
 
         def change do
           create index("posts", [:slug], concurrently: true)
         end
       end
 
-  And you also need to disable the migration lock for that repository:
+  Disabling DDL transactions removes the guarantee that all of the changes
+  in the migration will happen at once. Disabling the migration lock removes
+  the guarantee only a single node will run a given migration if multiple
+  nodes are attempting to migrate at the same time.
 
-      config :my_app, MyApp.Repo, migration_lock: nil
-
-  The migration lock is used to guarantee that only one node in a cluster
-  can run migrations. Two nodes may attempt to race each other.
-
-  Since running migrations outside a transaction can be dangerous,
-  consider performing very few operations in migrations that add concurrent
-  indexes. We recommend to run migrations with concurrent indexes in isolation
-  and disable those features only temporarily.
+  Since running migrations outside a transaction and without locks can be
+  dangerous, consider performing very few operations in migrations that add
+  concurrent indexes. We recommend to run migrations with concurrent indexes
+  in isolation and disable those features only temporarily.
 
   ## Index types
 
@@ -585,7 +696,7 @@ defmodule Ecto.Migration do
 
   For example, PostgreSQL supports several index types like B-tree (the
   default), Hash, GIN, and GiST. More information on index types can be found
-  in the [PostgreSQL docs](http://www.postgresql.org/docs/9.4/static/indexes-types.html).
+  in the [PostgreSQL docs](http://www.postgresql.org/docs/current/indexes-types.html).
 
   ## Partial indexes
 
@@ -597,7 +708,7 @@ defmodule Ecto.Migration do
   to the generated `WHERE` clause as-is.
 
   More information on partial indexes can be found in the [PostgreSQL
-  docs](http://www.postgresql.org/docs/9.4/static/indexes-partial.html).
+  docs](http://www.postgresql.org/docs/current/indexes-partial.html).
 
   ## Examples
 
@@ -606,7 +717,7 @@ defmodule Ecto.Migration do
       create index("products", [:category_id, :sku], unique: true)
 
       # The name can also be set explicitly
-      drop index("products", [:category_id, :sku], name: :my_special_name)
+      create index("products", [:category_id, :sku], name: :my_special_name)
 
       # Indexes can be added concurrently
       create index("products", [:category_id, :sku], concurrently: true)
@@ -616,6 +727,9 @@ defmodule Ecto.Migration do
 
       # Partial indexes are created by specifying a :where option
       create index("products", [:user_id], where: "price = 0", name: :free_products_index)
+
+      # Covering indexes are created by specifying a :include option
+      create index("products", [:user_id], include: [:category_id])
 
   Indexes also support custom expressions. Some databases may require the
   index expression to be written between parentheses:
@@ -665,7 +779,14 @@ defmodule Ecto.Migration do
   end
 
   @doc """
-  Executes arbitrary SQL or a keyword command.
+  Executes arbitrary SQL, anonymous function or a keyword command.
+
+  The argument is typically a string, containing the SQL command to be executed.
+  Keyword commands exist for non-SQL adapters and are not used in most situations.
+
+  Supplying an anonymous function does allow for arbitrary code to execute as
+  part of the migration. This is most often used in combination with `repo/0`
+  by library authors who want to create high-level migration helpers.
 
   Reversible commands can be defined by calling `execute/2`.
 
@@ -675,8 +796,11 @@ defmodule Ecto.Migration do
 
       execute create: "posts", capped: true, size: 1024
 
+      execute(fn -> repo().query!("SELECT $1::integer + $2", [40, 2], [log: :info]) end)
+
+      execute(fn -> repo().update_all("posts", set: [published: true]) end)
   """
-  def execute(command) when is_binary(command) or is_list(command) do
+  def execute(command) when is_binary(command) or is_function(command, 0) or is_list(command) do
     Runner.execute command
   end
 
@@ -689,13 +813,24 @@ defmodule Ecto.Migration do
   separate `up/0` and `down/0` blocks that each contain an `execute/1`
   expression.
 
+  The allowed parameters are explained in `execute/1`.
+
   ## Examples
 
-      execute "CREATE EXTENSION postgres_fdw", "DROP EXTENSION postgres_fdw"
+      defmodule MyApp.MyMigration do
+        use Ecto.Migration
 
+        def change do
+          execute "CREATE EXTENSION postgres_fdw", "DROP EXTENSION postgres_fdw"
+          execute(&execute_up/0, &execute_down/0)
+        end
+
+        defp execute_up, do: repo().query!("select 'Up query …';", [], [log: :info])
+        defp execute_down, do: repo().query!("select 'Down query …';", [], [log: :info])
+      end
   """
-  def execute(up, down) when (is_binary(up) or is_list(up)) and
-                             (is_binary(down) or is_list(down)) do
+  def execute(up, down) when (is_binary(up) or is_function(up, 0) or is_list(up)) and
+                             (is_binary(down) or is_function(down, 0) or is_list(down)) do
     Runner.execute %Command{up: up, down: down}
   end
 
@@ -704,7 +839,7 @@ defmodule Ecto.Migration do
   """
   @spec direction :: :up | :down
   def direction do
-    Runner.migrator_direction
+    Runner.migrator_direction()
   end
 
   @doc """
@@ -719,7 +854,7 @@ defmodule Ecto.Migration do
   Gets the migrator prefix.
   """
   def prefix do
-    Runner.prefix
+    Runner.prefix()
   end
 
   @doc """
@@ -766,6 +901,8 @@ defmodule Ecto.Migration do
     * `:precision` - the precision for a numeric type. Required when `:scale` is
       specified.
     * `:scale` - the scale of a numeric type. Defaults to `0`.
+    * `:after` - positions field after the specified one. Only supported on MySQL,
+      it is ignored by other databases.
 
   """
   def add(column, type, opts \\ []) when is_atom(column) and is_list(opts) do
@@ -781,7 +918,7 @@ defmodule Ecto.Migration do
 
   `type` and `opts` are exactly the same as in `add/3`.
 
-  This command is not reversible as Ecto does not know about column existense before the creation attempt.
+  This command is not reversible as Ecto does not know about column existence before the creation attempt.
 
   ## Examples
 
@@ -867,6 +1004,8 @@ defmodule Ecto.Migration do
   This command is not reversible unless the `:from` option is provided.
   If the `:from` value is a `%Reference{}`, the adapter will try to drop
   the corresponding foreign key constraints before modifying the type.
+  Note `:from` cannot be used to modify primary keys, as those are
+  generally trickier to make reversible.
 
   See `add/3` for more information on supported types.
 
@@ -934,7 +1073,7 @@ defmodule Ecto.Migration do
   Removes a column only if the column exists when altering the constraint if the reference type is passed
   once it only has the constraint name on reference structure.
 
-  This command is not reversible as Ecto does not know about column existense before the removal attempt.
+  This command is not reversible as Ecto does not know about column existence before the removal attempt.
 
   ## Examples
 
@@ -951,10 +1090,22 @@ defmodule Ecto.Migration do
   @doc ~S"""
   Defines a foreign key.
 
+  By default it assumes you are linking to the referenced table
+  via its primary key with name `:id`. If you are using a non-default
+  key setup (e.g. using `uuid` type keys) you must ensure you set the
+  options, such as `:name` and `:type`, to match your target key.
+
   ## Examples
 
       create table("products") do
         add :group_id, references("groups")
+      end
+
+      create table("categories") do
+        add :group_id, :integer
+        # A composite foreign that points from categories (product_id, group_id)
+        # to products (id, group_id)
+        add :product_id, references("products", with: [group_id: :group_id])
       end
 
   ## Options
@@ -962,13 +1113,22 @@ defmodule Ecto.Migration do
     * `:name` - The name of the underlying reference, which defaults to
       "#{table}_#{column}_fkey".
     * `:column` - The foreign key column name, which defaults to `:id`.
-    * `:prefix` - The prefix for the reference. Defaults to the reference
-      of the table if present, or `nil`.
+    * `:prefix` - The prefix for the reference. Defaults to the prefix
+      defined by the block's `table/2` struct (the "products" table in
+      the example above), or `nil`.
     * `:type` - The foreign key type, which defaults to `:bigserial`.
     * `:on_delete` - What to do if the referenced entry is deleted. May be
       `:nothing` (default), `:delete_all`, `:nilify_all`, or `:restrict`.
     * `:on_update` - What to do if the referenced entry is updated. May be
       `:nothing` (default), `:update_all`, `:nilify_all`, or `:restrict`.
+    * `:validate` - Whether or not to validate the foreign key constraint on
+       creation or not. Only available in PostgreSQL, and should be followed by
+       a command to validate the foreign key in a following migration if false.
+    * `:with` - defines additional keys to the foreign key in order to build
+      a composite primary key
+    * `:match` - select if the match is `:simple`, `:partial`, or `:full`. This is
+      [supported only by PostgreSQL](https://www.postgresql.org/docs/current/sql-createtable.html)
+      at the moment.
 
   """
   def references(table, opts \\ [])
@@ -978,8 +1138,7 @@ defmodule Ecto.Migration do
   end
 
   def references(table, opts) when is_binary(table) and is_list(opts) do
-    repo_opts = Keyword.take(Runner.repo_config(:migration_primary_key, []), [:type])
-    opts = Keyword.merge(repo_opts, opts)
+    opts = Keyword.merge(foreign_key_repo_opts(), opts)
     reference = struct(%Reference{table: table}, opts)
 
     unless reference.on_delete in [:nothing, :delete_all, :nilify_all, :restrict] do
@@ -991,6 +1150,15 @@ defmodule Ecto.Migration do
     end
 
     reference
+  end
+
+  defp foreign_key_repo_opts() do
+    case Runner.repo_config(:migration_primary_key, []) do
+      false -> []
+      opts -> opts
+    end
+    |> Keyword.take([:type])
+    |> Keyword.merge(Runner.repo_config(:migration_foreign_key, []))
   end
 
   @doc ~S"""
@@ -1008,6 +1176,9 @@ defmodule Ecto.Migration do
     * `:check` - A check constraint expression. Required when creating a check constraint.
     * `:exclude` - An exclusion constraint expression. Required when creating an exclusion constraint.
     * `:prefix` - The prefix for the table.
+    * `:validate` - Whether or not to validate the constraint on creation (true by default). Only
+       available in PostgreSQL, and should be followed by a command to validate the new constraint in
+       a following migration if false.
 
   """
   def constraint(table, name, opts \\ [])
@@ -1020,14 +1191,15 @@ defmodule Ecto.Migration do
     struct(%Constraint{table: table, name: name}, opts)
   end
 
-  @doc """
-  Executes queue migration commands.
-
-  Reverses the order in which commands are executed when doing a rollback
-  on a `change/0` function and resets the commands queue.
-  """
-  def flush do
-    Runner.flush
+  @doc "Executes queue migration commands."
+  defmacro flush do
+    quote do
+      if direction() == :down and not function_exported?(__MODULE__, :down, 0) do
+        raise "calling flush() inside change when doing rollback is not supported."
+      else
+        Runner.flush()
+      end
+    end
   end
 
   # Validation helpers
@@ -1057,6 +1229,21 @@ defmodule Ecto.Migration do
 
   defp validate_type!(%Reference{} = reference) do
     reference
+  end
+
+  defp validate_type!(type) do
+    raise ArgumentError, """
+    invalid migration type: #{inspect(type)}. Expected one of:
+
+      * an atom, such as :string
+      * a quoted atom, such as :"integer unsigned"
+      * an Ecto.Type, such as Ecto.UUID
+      * a tuple of the above, such as {:array, :integer} or {:array, Ecto.UUID}
+      * a reference, such as references(:users)
+
+    All Ecto types are allowed and properly translated.
+    All other types are sent to the database as is.
+    """
   end
 
   defp validate_index_opts!(opts) when is_list(opts) do
@@ -1092,6 +1279,20 @@ defmodule Ecto.Migration do
       true ->
         raise Ecto.MigrationError,  message:
           "the :prefix option `#{prefix}` does match the migrator prefix `#{runner_prefix}`"
+    end
+  end
+
+  @doc false
+  def __primary_key__() do
+    case Runner.repo_config(:migration_primary_key, []) do
+      false ->
+        false
+
+      opts when is_list(opts) ->
+        opts = Keyword.put(opts, :primary_key, true)
+        {name, opts} = Keyword.pop(opts, :name, :id)
+        {type, opts} = Keyword.pop(opts, :type, :bigserial)
+        {name, type, opts}
     end
   end
 end

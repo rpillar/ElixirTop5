@@ -1,19 +1,18 @@
 defmodule Gettext.Mixfile do
   use Mix.Project
 
-  @version "0.16.1"
+  @version "0.18.2"
 
   @description "Internationalization and localization through gettext"
-  @repo_url "https://github.com/elixir-lang/gettext"
+  @repo_url "https://github.com/elixir-gettext/gettext"
 
   def project do
     [
       app: :gettext,
       version: @version,
-      elixir: "~> 1.4",
+      elixir: "~> 1.6",
       build_embedded: Mix.env() == :prod,
       deps: deps(),
-      xref: [exclude: [{Kernel.ParallelCompiler, :async, 1}]],
 
       # Hex
       package: hex_package(),
@@ -31,8 +30,8 @@ defmodule Gettext.Mixfile do
 
   def application do
     [
-      applications: [:logger],
-      env: [default_locale: "en"],
+      extra_applications: [:logger],
+      env: [default_locale: "en", plural_forms: Gettext.Plural],
       mod: {Gettext.Application, []}
     ]
   end
@@ -40,7 +39,7 @@ defmodule Gettext.Mixfile do
   def hex_package do
     [
       maintainers: ["Andrea Leopardi", "José Valim"],
-      licenses: ["Apache 2.0"],
+      licenses: ["Apache-2.0"],
       links: %{"GitHub" => @repo_url},
       files: ~w(lib src/gettext_po_parser.yrl mix.exs *.md)
     ]
@@ -48,7 +47,7 @@ defmodule Gettext.Mixfile do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.19", only: :dev}
+      {:ex_doc, "~> 0.19", only: :docs, path: "../ex_doc"}
     ]
   end
 end

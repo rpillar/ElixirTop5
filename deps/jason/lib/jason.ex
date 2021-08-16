@@ -8,7 +8,7 @@ defmodule Jason do
   @type escape :: :json | :unicode_safe | :html_safe | :javascript_safe
   @type maps :: :naive | :strict
 
-  @type encode_opt :: {:escape, escape} | {:maps, maps} | {:pretty, true | Formatter.opts()}
+  @type encode_opt :: {:escape, escape} | {:maps, maps} | {:pretty, boolean | Formatter.opts()}
 
   @type keys :: :atoms | :atoms! | :strings | :copy | (String.t() -> term)
 
@@ -93,9 +93,9 @@ defmodule Jason do
       * `:json` (default) - the regular JSON escaping as defined by RFC 7159.
       * `:javascript_safe` - additionally escapes the LINE SEPARATOR (U+2028)
         and PARAGRAPH SEPARATOR (U+2029) characters to make the produced JSON
-        valid JavaSciprt.
-      * `:html_safe` - similar to `:javascript`, but also escapes the `/`
-        caracter to prevent XSS.
+        valid JavaScript.
+      * `:html_safe` - similar to `:javascript_safe`, but also escapes the `/`
+        character to prevent XSS.
       * `:unicode_safe` - escapes all non-ascii characters.
 
     * `:maps` - controls how maps are encoded. Possible values are:

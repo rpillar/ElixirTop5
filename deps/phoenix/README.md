@@ -1,13 +1,12 @@
 ![phoenix logo](https://raw.githubusercontent.com/phoenixframework/phoenix/master/priv/static/phoenix.png)
-> ### Productive. Reliable. Fast.
-> A productive web framework that does not compromise speed or maintainability.
+> Peace of mind from prototype to production.
 
 [![Build Status](https://api.travis-ci.org/phoenixframework/phoenix.svg?branch=master)](https://travis-ci.org/phoenixframework/phoenix)
 [![Inline docs](http://inch-ci.org/github/phoenixframework/phoenix.svg)](http://inch-ci.org/github/phoenixframework/phoenix)
 
 ## Getting started
 
-See the official site at http://www.phoenixframework.org/
+See the official site at https://www.phoenixframework.org/
 
 Install the latest version of Phoenix by following the instructions at https://hexdocs.pm/phoenix/installation.html#phoenix
 
@@ -46,9 +45,7 @@ To create projects outside of the `installer/` directory, add the latest archive
 To build the documentation from source:
 
 ```bash
-$ cd assets
-$ npm install
-$ cd ..
+$ npm install --prefix assets
 $ MIX_ENV=docs mix docs
 ```
 

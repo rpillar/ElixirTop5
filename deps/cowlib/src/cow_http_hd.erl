@@ -14,7 +14,9 @@
 
 -module(cow_http_hd).
 
-%% Parsing.
+%% Functions are ordered by header name, with the parse
+%% function before the build function.
+
 -export([parse_accept/1]).
 -export([parse_accept_charset/1]).
 % @todo -export([parse_accept_datetime/1]). RFC7089
@@ -23,11 +25,17 @@
 -export([parse_accept_language/1]).
 -export([parse_accept_ranges/1]).
 % @todo -export([parse_access_control_allow_credentials/1]). CORS
+-export([access_control_allow_credentials/0]).
 % @todo -export([parse_access_control_allow_headers/1]). CORS
+-export([access_control_allow_headers/1]).
 % @todo -export([parse_access_control_allow_methods/1]). CORS
+-export([access_control_allow_methods/1]).
 % @todo -export([parse_access_control_allow_origin/1]). CORS
+-export([access_control_allow_origin/1]).
 % @todo -export([parse_access_control_expose_headers/1]). CORS
+-export([access_control_expose_headers/1]).
 % @todo -export([parse_access_control_max_age/1]). CORS
+-export([access_control_max_age/1]).
 -export([parse_access_control_request_headers/1]).
 -export([parse_access_control_request_method/1]).
 -export([parse_age/1]).
@@ -47,7 +55,7 @@
 % @todo -export([parse_content_security_policy/1]). CSP
 % @todo -export([parse_content_security_policy_report_only/1]). CSP
 -export([parse_content_type/1]).
-% @todo -export([parse_cookie/1]). RFC6265
+-export([parse_cookie/1]).
 -export([parse_date/1]).
 % @todo -export([parse_digest/1]). RFC3230
 % @todo -export([parse_dnt/1]). http://donottrack.us/
@@ -65,7 +73,7 @@
 -export([parse_if_unmodified_since/1]).
 % @todo -export([parse_last_event_id/1]). eventsource
 -export([parse_last_modified/1]).
-% @todo -export([parse_link/1]). RFC5988
+-export([parse_link/1]).
 % @todo -export([parse_location/1]). RFC7231
 -export([parse_max_forwards/1]).
 % @todo -export([parse_memento_datetime/1]). RFC7089
@@ -92,7 +100,7 @@
 -export([parse_sec_websocket_version_req/1]).
 -export([parse_sec_websocket_version_resp/1]).
 % @todo -export([parse_server/1]). RFC7231
-% @todo -export([parse_set_cookie/1]). RFC6265
+-export([parse_set_cookie/1]).
 % @todo -export([parse_strict_transport_security/1]). RFC6797
 % @todo -export([parse_tcn/1]). RFC2295
 -export([parse_te/1]).
@@ -101,6 +109,10 @@
 -export([parse_upgrade/1]).
 % @todo -export([parse_user_agent/1]). RFC7231
 % @todo -export([parse_variant_vary/1]). RFC2295
+-export([parse_variant_key/2]).
+-export([variant_key/1]).
+-export([parse_variants/1]).
+-export([variants/1]).
 -export([parse_vary/1]).
 % @todo -export([parse_via/1]). RFC7230
 % @todo -export([parse_want_digest/1]). RFC3230
@@ -110,14 +122,6 @@
 % @todo -export([parse_x_dns_prefetch_control/1]). Various (value: "on"|"off")
 -export([parse_x_forwarded_for/1]).
 % @todo -export([parse_x_frame_options/1]). RFC7034
-
-%% Building.
--export([access_control_allow_credentials/0]).
--export([access_control_allow_headers/1]).
--export([access_control_allow_methods/1]).
--export([access_control_allow_origin/1]).
--export([access_control_expose_headers/1]).
--export([access_control_max_age/1]).
 
 -type etag() :: {weak | strong, binary()}.
 -export_type([etag/0]).
@@ -212,9 +216,7 @@ qvalue_to_iodata(Q) when Q < 1000 -> [<<"0.">>, integer_to_binary(Q)];
 qvalue_to_iodata(1000) -> <<"1">>.
 -endif.
 
-%% Parsing.
-
-%% @doc Parse the Accept header.
+%% Accept header.
 
 -spec parse_accept(binary()) -> [{media_type(), qvalue(), [binary() | {binary(), binary()}]}].
 parse_accept(<<"*/*">>) ->
@@ -434,7 +436,7 @@ horse_parse_accept() ->
 	).
 -endif.
 
-%% @doc Parse the Accept-Charset header.
+%% Accept-Charset header.
 
 -spec parse_accept_charset(binary()) -> [{binary(), qvalue()}].
 parse_accept_charset(Charset) ->
@@ -525,7 +527,7 @@ horse_parse_accept_charset() ->
 	).
 -endif.
 
-%% @doc Parse the Accept-Encoding header.
+%% Accept-Encoding header.
 
 -spec parse_accept_encoding(binary()) -> [{binary(), qvalue()}].
 parse_accept_encoding(Encoding) ->
@@ -581,7 +583,7 @@ horse_parse_accept_encoding() ->
 	).
 -endif.
 
-%% @doc Parse the Accept-Language header.
+%% Accept-Language header.
 
 -spec parse_accept_language(binary()) -> [{binary(), qvalue()}].
 parse_accept_language(LanguageRange) ->
@@ -698,7 +700,7 @@ horse_parse_accept_language() ->
 	).
 -endif.
 
-%% @doc Parse the Accept-Ranges header.
+%% Accept-Ranges header.
 
 -spec parse_accept_ranges(binary()) -> [binary()].
 parse_accept_ranges(<<"none">>) -> [];
@@ -737,7 +739,148 @@ horse_parse_accept_ranges_other() ->
 	).
 -endif.
 
-%% @doc Parse the Access-Control-Request-Headers header.
+%% Access-Control-Allow-Credentials header.
+
+-spec access_control_allow_credentials() -> iodata().
+access_control_allow_credentials() -> <<"true">>.
+
+%% Access-Control-Allow-Headers header.
+
+-spec access_control_allow_headers([binary()]) -> iodata().
+access_control_allow_headers(Headers) ->
+	join_token_list(nonempty(Headers)).
+
+-ifdef(TEST).
+access_control_allow_headers_test_() ->
+	Tests = [
+		{[<<"accept">>], <<"accept">>},
+		{[<<"accept">>, <<"authorization">>, <<"content-type">>], <<"accept, authorization, content-type">>}
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> R = iolist_to_binary(access_control_allow_headers(V)) end} || {V, R} <- Tests].
+
+access_control_allow_headers_error_test_() ->
+	Tests = [
+		[]
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> {'EXIT', _} = (catch access_control_allow_headers(V)) end} || V <- Tests].
+
+horse_access_control_allow_headers() ->
+	horse:repeat(200000,
+		access_control_allow_headers([<<"accept">>, <<"authorization">>, <<"content-type">>])
+	).
+-endif.
+
+%% Access-Control-Allow-Methods header.
+
+-spec access_control_allow_methods([binary()]) -> iodata().
+access_control_allow_methods(Methods) ->
+	join_token_list(nonempty(Methods)).
+
+-ifdef(TEST).
+access_control_allow_methods_test_() ->
+	Tests = [
+		{[<<"GET">>], <<"GET">>},
+		{[<<"GET">>, <<"POST">>, <<"DELETE">>], <<"GET, POST, DELETE">>}
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> R = iolist_to_binary(access_control_allow_methods(V)) end} || {V, R} <- Tests].
+
+access_control_allow_methods_error_test_() ->
+	Tests = [
+		[]
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> {'EXIT', _} = (catch access_control_allow_methods(V)) end} || V <- Tests].
+
+horse_access_control_allow_methods() ->
+	horse:repeat(200000,
+		access_control_allow_methods([<<"GET">>, <<"POST">>, <<"DELETE">>])
+	).
+-endif.
+
+%% Access-Control-Allow-Origin header.
+
+-spec access_control_allow_origin({binary(), binary(), 0..65535} | reference() | '*') -> iodata().
+access_control_allow_origin({Scheme, Host, Port}) ->
+	case default_port(Scheme) of
+		Port -> [Scheme, <<"://">>, Host];
+		_ -> [Scheme, <<"://">>, Host, <<":">>, integer_to_binary(Port)]
+	end;
+access_control_allow_origin('*') -> <<$*>>;
+access_control_allow_origin(Ref) when is_reference(Ref) -> <<"null">>.
+
+-ifdef(TEST).
+access_control_allow_origin_test_() ->
+	Tests = [
+		{{<<"http">>, <<"www.example.org">>, 8080}, <<"http://www.example.org:8080">>},
+		{{<<"http">>, <<"www.example.org">>, 80}, <<"http://www.example.org">>},
+		{{<<"http">>, <<"192.0.2.1">>, 8080}, <<"http://192.0.2.1:8080">>},
+		{{<<"http">>, <<"192.0.2.1">>, 80}, <<"http://192.0.2.1">>},
+		{{<<"http">>, <<"[2001:db8::1]">>, 8080}, <<"http://[2001:db8::1]:8080">>},
+		{{<<"http">>, <<"[2001:db8::1]">>, 80}, <<"http://[2001:db8::1]">>},
+		{{<<"http">>, <<"[::ffff:192.0.2.1]">>, 8080}, <<"http://[::ffff:192.0.2.1]:8080">>},
+		{{<<"http">>, <<"[::ffff:192.0.2.1]">>, 80}, <<"http://[::ffff:192.0.2.1]">>},
+		{make_ref(), <<"null">>},
+		{'*', <<$*>>}
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> R = iolist_to_binary(access_control_allow_origin(V)) end} || {V, R} <- Tests].
+
+horse_access_control_allow_origin() ->
+	horse:repeat(200000,
+		access_control_allow_origin({<<"http">>, <<"example.org">>, 8080})
+	).
+-endif.
+
+%% Access-Control-Expose-Headers header.
+
+-spec access_control_expose_headers([binary()]) -> iodata().
+access_control_expose_headers(Headers) ->
+	join_token_list(nonempty(Headers)).
+
+-ifdef(TEST).
+access_control_expose_headers_test_() ->
+	Tests = [
+		{[<<"accept">>], <<"accept">>},
+		{[<<"accept">>, <<"authorization">>, <<"content-type">>], <<"accept, authorization, content-type">>}
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> R = iolist_to_binary(access_control_expose_headers(V)) end} || {V, R} <- Tests].
+
+access_control_expose_headers_error_test_() ->
+	Tests = [
+		[]
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> {'EXIT', _} = (catch access_control_expose_headers(V)) end} || V <- Tests].
+
+horse_access_control_expose_headers() ->
+	horse:repeat(200000,
+		access_control_expose_headers([<<"accept">>, <<"authorization">>, <<"content-type">>])
+	).
+-endif.
+
+%% Access-Control-Max-Age header.
+
+-spec access_control_max_age(non_neg_integer()) -> iodata().
+access_control_max_age(MaxAge) -> integer_to_binary(MaxAge).
+
+-ifdef(TEST).
+access_control_max_age_test_() ->
+	Tests = [
+		{0, <<"0">>},
+		{42, <<"42">>},
+		{69, <<"69">>},
+		{1337, <<"1337">>},
+		{3495, <<"3495">>},
+		{1234567890, <<"1234567890">>}
+	],
+	[{V, fun() -> R = access_control_max_age(V) end} || {V, R} <- Tests].
+-endif.
+
+%% Access-Control-Request-Headers header.
 
 -spec parse_access_control_request_headers(binary()) -> [binary()].
 parse_access_control_request_headers(Headers) ->
@@ -774,7 +917,7 @@ horse_parse_access_control_request_headers() ->
 	).
 -endif.
 
-%% @doc Parse the Access-Control-Request-Method header.
+%% Access-Control-Request-Method header.
 
 -spec parse_access_control_request_method(binary()) -> binary().
 parse_access_control_request_method(Method) ->
@@ -811,7 +954,7 @@ horse_parse_access_control_request_method() ->
 	).
 -endif.
 
-%% @doc Parse the Age header.
+%% Age header.
 
 -spec parse_age(binary()) -> non_neg_integer().
 parse_age(Age) ->
@@ -840,7 +983,7 @@ parse_age_error_test_() ->
 	[{V, fun() -> {'EXIT', _} = (catch parse_age(V)) end} || V <- Tests].
 -endif.
 
-%% @doc Parse the Allow header.
+%% Allow header.
 
 -spec parse_allow(binary()) -> [binary()].
 parse_allow(Allow) ->
@@ -875,7 +1018,7 @@ horse_parse_allow() ->
 	).
 -endif.
 
-%% @doc Parse the Authorization header.
+%% Authorization header.
 %%
 %% We support Basic, Digest and Bearer schemes only.
 %%
@@ -887,13 +1030,22 @@ horse_parse_allow() ->
 	-> {basic, binary(), binary()}
 	| {bearer, binary()}
 	| {digest, [{binary(), binary()}]}.
-%% @todo The token is case-insensitive. https://tools.ietf.org/html/rfc7235#section-2.1
-parse_authorization(<<"Basic ", R/bits >>) ->
+parse_authorization(<<B, A, S, I, C, " ", R/bits >>)
+		when ((B =:= $B) or (B =:= $b)), ((A =:= $A) or (A =:= $a)),
+			((S =:= $S) or (S =:= $s)), ((I =:= $I) or (I =:= $i)),
+			((C =:= $C) or (C =:= $c)) ->
 	auth_basic(base64:decode(R), <<>>);
-parse_authorization(<<"Bearer ", R/bits >>) when R =/= <<>> ->
+parse_authorization(<<B, E1, A, R1, E2, R2, " ", R/bits >>)
+		when (R =/= <<>>), ((B =:= $B) or (B =:= $b)),
+			((E1 =:= $E) or (E1 =:= $e)), ((A =:= $A) or (A =:= $a)),
+			((R1 =:= $R) or (R1 =:= $r)), ((E2 =:= $E) or (E2 =:= $e)),
+			((R2 =:= $R) or (R2 =:= $r)) ->
 	validate_auth_bearer(R),
 	{bearer, R};
-parse_authorization(<<"Digest ", R/bits >>) ->
+parse_authorization(<<D, I, G, E, S, T, " ", R/bits >>)
+		when ((D =:= $D) or (D =:= $d)), ((I =:= $I) or (I =:= $i)),
+			((G =:= $G) or (G =:= $g)), ((E =:= $E) or (E =:= $e)),
+			((S =:= $S) or (S =:= $s)), ((T =:= $T) or (T =:= $t)) ->
 	{digest, nonempty(auth_digest_list(R, []))}.
 
 auth_basic(<< $:, Password/bits >>, UserID) -> {basic, UserID, Password};
@@ -944,7 +1096,9 @@ auth_digest_list_sep(<< C, R/bits >>, Acc) when ?IS_WS(C) -> auth_digest_list_se
 parse_authorization_test_() ->
 	Tests = [
 		{<<"Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==">>, {basic, <<"Aladdin">>, <<"open sesame">>}},
+		{<<"bAsIc QWxhZGRpbjpvcGVuIHNlc2FtZQ==">>, {basic, <<"Aladdin">>, <<"open sesame">>}},
 		{<<"Bearer mF_9.B5f-4.1JqM">>, {bearer, <<"mF_9.B5f-4.1JqM">>}},
+		{<<"bEaRer mF_9.B5f-4.1JqM">>, {bearer, <<"mF_9.B5f-4.1JqM">>}},
 		{<<"Digest username=\"Mufasa\","
 				"realm=\"testrealm@host.com\","
 				"nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\","
@@ -992,7 +1146,7 @@ horse_parse_authorization_digest() ->
 	).
 -endif.
 
-%% @doc Parse the Cache-Control header.
+%% Cache-Control header.
 %%
 %% In the fields list case, we do not support escaping, which shouldn't be needed anyway.
 
@@ -1142,7 +1296,7 @@ horse_parse_cache_control_fields() ->
 	).
 -endif.
 
-%% @doc Parse the Connection header.
+%% Connection header.
 
 -spec parse_connection(binary()) -> [binary()].
 parse_connection(<<"close">>) ->
@@ -1194,7 +1348,7 @@ horse_parse_connection_keepalive_upgrade() ->
 	).
 -endif.
 
-%% @doc Parse the Content-Encoding header.
+%% Content-Encoding header.
 
 -spec parse_content_encoding(binary()) -> [binary()].
 parse_content_encoding(ContentEncoding) ->
@@ -1219,7 +1373,7 @@ horse_parse_content_encoding() ->
 	).
 -endif.
 
-%% @doc Parse the Content-Language header.
+%% Content-Language header.
 %%
 %% We do not support irregular deprecated tags that do not match the ABNF.
 
@@ -1505,7 +1659,7 @@ horse_parse_content_language() ->
 	).
 -endif.
 
-%% @doc Parse the Content-Length header.
+%% Content-Length header.
 
 -spec parse_content_length(binary()) -> non_neg_integer().
 parse_content_length(ContentLength) ->
@@ -1552,7 +1706,7 @@ horse_parse_content_length_giga() ->
 	).
 -endif.
 
-%% @doc Parse the Content-Range header.
+%% Content-Range header.
 
 -spec parse_content_range(binary())
 	-> {bytes, non_neg_integer(), non_neg_integer(), non_neg_integer() | '*'}
@@ -1652,7 +1806,7 @@ horse_parse_content_range_other() ->
 	).
 -endif.
 
-%% @doc Parse the Content-Type header.
+%% Content-Type header.
 
 -spec parse_content_type(binary()) -> media_type().
 parse_content_type(<< C, R/bits >>) when ?IS_TOKEN(C) ->
@@ -1760,7 +1914,13 @@ horse_parse_content_type() ->
 	).
 -endif.
 
-%% @doc Parse the Date header.
+%% Cookie header.
+
+-spec parse_cookie(binary()) -> [{binary(), binary()}].
+parse_cookie(Cookie) ->
+	cow_cookie:parse_cookie(Cookie).
+
+%% Date header.
 
 -spec parse_date(binary()) -> calendar:datetime().
 parse_date(Date) ->
@@ -1774,7 +1934,7 @@ parse_date_test_() ->
 	[{V, fun() -> R = parse_date(V) end} || {V, R} <- Tests].
 -endif.
 
-%% @doc Parse the ETag header.
+%% ETag header.
 
 -spec parse_etag(binary()) -> etag().
 parse_etag(<< $W, $/, $", R/bits >>) ->
@@ -1831,7 +1991,7 @@ horse_parse_etag() ->
 	).
 -endif.
 
-%% @doc Parse the Expect header.
+%% Expect header.
 
 -spec parse_expect(binary()) -> continue.
 parse_expect(<<"100-continue">>) ->
@@ -1879,7 +2039,7 @@ horse_parse_expect() ->
 	).
 -endif.
 
-%% @doc Parse the Expires header.
+%% Expires header.
 %%
 %% Recipients must interpret invalid date formats as a date
 %% in the past. The value "0" is commonly used.
@@ -1914,7 +2074,7 @@ horse_parse_expires_invalid() ->
 	).
 -endif.
 
-%% @doc Parse the Host header.
+%% Host header.
 %%
 %% We only seek to have legal characters and separate the
 %% host and port values. The number of segments in the host
@@ -1998,13 +2158,13 @@ horse_parse_host_ipv6_v4() ->
 	).
 -endif.
 
-%% @doc Parse the HTTP2-Settings header.
+%% HTTP2-Settings header.
 
 -spec parse_http2_settings(binary()) -> map().
 parse_http2_settings(HTTP2Settings) ->
 	cow_http2:parse_settings_payload(base64:decode(HTTP2Settings)).
 
-%% @doc Parse the If-Match header.
+%% If-Match header.
 
 -spec parse_if_match(binary()) -> '*' | [etag()].
 parse_if_match(<<"*">>) ->
@@ -2056,7 +2216,7 @@ horse_parse_if_match() ->
 	).
 -endif.
 
-%% @doc Parse the If-Modified-Since header.
+%% If-Modified-Since header.
 
 -spec parse_if_modified_since(binary()) -> calendar:datetime().
 parse_if_modified_since(IfModifiedSince) ->
@@ -2070,7 +2230,7 @@ parse_if_modified_since_test_() ->
 	[{V, fun() -> R = parse_if_modified_since(V) end} || {V, R} <- Tests].
 -endif.
 
-%% @doc Parse the If-None-Match header.
+%% If-None-Match header.
 
 -spec parse_if_none_match(binary()) -> '*' | [etag()].
 parse_if_none_match(<<"*">>) ->
@@ -2103,7 +2263,7 @@ horse_parse_if_none_match() ->
 	).
 -endif.
 
-%% @doc Parse the If-Range header.
+%% If-Range header.
 
 -spec parse_if_range(binary()) -> etag() | calendar:datetime().
 parse_if_range(<< $W, $/, $", R/bits >>) ->
@@ -2139,7 +2299,7 @@ horse_parse_if_range_date() ->
 	).
 -endif.
 
-%% @doc Parse the If-Unmodified-Since header.
+%% If-Unmodified-Since header.
 
 -spec parse_if_unmodified_since(binary()) -> calendar:datetime().
 parse_if_unmodified_since(IfModifiedSince) ->
@@ -2153,7 +2313,7 @@ parse_if_unmodified_since_test_() ->
 	[{V, fun() -> R = parse_if_unmodified_since(V) end} || {V, R} <- Tests].
 -endif.
 
-%% @doc Parse the Last-Modified header.
+%% Last-Modified header.
 
 -spec parse_last_modified(binary()) -> calendar:datetime().
 parse_last_modified(LastModified) ->
@@ -2167,7 +2327,13 @@ parse_last_modified_test_() ->
 	[{V, fun() -> R = parse_last_modified(V) end} || {V, R} <- Tests].
 -endif.
 
-%% @doc Parse the Max-Forwards header.
+%% Link header.
+
+-spec parse_link(binary()) -> [cow_link:link()].
+parse_link(Link) ->
+	cow_link:parse_link(Link).
+
+%% Max-Forwards header.
 
 -spec parse_max_forwards(binary()) -> non_neg_integer().
 parse_max_forwards(MaxForwards) ->
@@ -2202,7 +2368,7 @@ parse_max_forwards_error_test_() ->
 	[{V, fun() -> {'EXIT', _} = (catch parse_max_forwards(V)) end} || V <- Tests].
 -endif.
 
-%% @doc Parse the Origin header.
+%% Origin header.
 
 %% According to the RFC6454 we should generate
 %% a fresh globally unique identifier and return that value if:
@@ -2344,7 +2510,7 @@ horse_parse_origin_null() ->
 	).
 -endif.
 
-%% @doc Parse the Pragma header.
+%% Pragma header.
 %%
 %% Legacy header kept for backward compatibility with HTTP/1.0 caches.
 %% Only the "no-cache" directive was ever specified, and only for
@@ -2357,7 +2523,7 @@ horse_parse_origin_null() ->
 parse_pragma(<<"no-cache">>) -> no_cache;
 parse_pragma(_) -> cache.
 
-%% @doc Parse the Proxy-Authenticate header.
+%% Proxy-Authenticate header.
 %%
 %% Alias of parse_www_authenticate/1 due to identical syntax.
 
@@ -2366,7 +2532,7 @@ parse_pragma(_) -> cache.
 parse_proxy_authenticate(ProxyAuthenticate) ->
 	parse_www_authenticate(ProxyAuthenticate).
 
-%% @doc Parse the Proxy-Authorization header.
+%% Proxy-Authorization header.
 %%
 %% Alias of parse_authorization/1 due to identical syntax.
 
@@ -2377,7 +2543,7 @@ parse_proxy_authenticate(ProxyAuthenticate) ->
 parse_proxy_authorization(ProxyAuthorization) ->
 	parse_authorization(ProxyAuthorization).
 
-%% @doc Parse the Range header.
+%% Range header.
 
 -spec parse_range(binary())
 	-> {bytes, [{non_neg_integer(), non_neg_integer() | infinity} | neg_integer()]}
@@ -2501,7 +2667,7 @@ horse_parse_range_other() ->
 	).
 -endif.
 
-%% @doc Parse the Retry-After header.
+%% Retry-After header.
 
 -spec parse_retry_after(binary()) -> non_neg_integer() | calendar:datetime().
 parse_retry_after(RetryAfter = << D, _/bits >>) when ?IS_DIGIT(D) ->
@@ -2536,7 +2702,7 @@ horse_parse_retry_after_delay_seconds() ->
 	).
 -endif.
 
-%% @doc Dummy parsing function for the Sec-WebSocket-Accept header.
+%% Sec-WebSocket-Accept header.
 %%
 %% The argument is returned without any processing. This value is
 %% expected to be matched directly by the client so no parsing is
@@ -2546,7 +2712,7 @@ horse_parse_retry_after_delay_seconds() ->
 parse_sec_websocket_accept(SecWebSocketAccept) ->
 	SecWebSocketAccept.
 
-%% @doc Parse the Sec-WebSocket-Extensions request header.
+%% Sec-WebSocket-Extensions header.
 
 -spec parse_sec_websocket_extensions(binary()) -> [{binary(), [binary() | {binary(), binary()}]}].
 parse_sec_websocket_extensions(SecWebSocketExtensions) ->
@@ -2639,7 +2805,7 @@ horse_parse_sec_websocket_extensions() ->
 	).
 -endif.
 
-%% @doc Dummy parsing function for the Sec-WebSocket-Key header.
+%% Sec-WebSocket-Key header.
 %%
 %% The argument is returned without any processing. This value is
 %% expected to be prepended to a static value, the result of which
@@ -2650,7 +2816,7 @@ horse_parse_sec_websocket_extensions() ->
 parse_sec_websocket_key(SecWebSocketKey) ->
 	SecWebSocketKey.
 
-%% @doc Parse the Sec-WebSocket-Protocol request header.
+%% Sec-WebSocket-Protocol request header.
 
 -spec parse_sec_websocket_protocol_req(binary()) -> [binary()].
 parse_sec_websocket_protocol_req(SecWebSocketProtocol) ->
@@ -2677,7 +2843,7 @@ horse_parse_sec_websocket_protocol_req() ->
 	).
 -endif.
 
-%% @doc Parse the Sec-Websocket-Protocol response header.
+%% Sec-Websocket-Protocol response header.
 
 -spec parse_sec_websocket_protocol_resp(binary()) -> binary().
 parse_sec_websocket_protocol_resp(Protocol) ->
@@ -2711,7 +2877,7 @@ horse_parse_sec_websocket_protocol_resp() ->
 	).
 -endif.
 
-%% @doc Parse the Sec-WebSocket-Version request header.
+%% Sec-WebSocket-Version request header.
 
 -spec parse_sec_websocket_version_req(binary()) -> websocket_version().
 parse_sec_websocket_version_req(SecWebSocketVersion) when byte_size(SecWebSocketVersion) < 4 ->
@@ -2753,7 +2919,7 @@ horse_parse_sec_websocket_version_req_255() ->
 	).
 -endif.
 
-%% @doc Parse the Sec-WebSocket-Version response header.
+%% Sec-WebSocket-Version response header.
 
 -spec parse_sec_websocket_version_resp(binary()) -> [websocket_version()].
 parse_sec_websocket_version_resp(SecWebSocketVersion) ->
@@ -2804,7 +2970,15 @@ horse_parse_sec_websocket_version_resp() ->
 	).
 -endif.
 
-%% @doc Parse the TE header.
+%% Set-Cookie header.
+
+-spec parse_set_cookie(binary())
+	-> {ok, binary(), binary(), cow_cookie:cookie_attrs()}
+	| ignore.
+parse_set_cookie(SetCookie) ->
+	cow_cookie:parse_set_cookie(SetCookie).
+
+%% TE header.
 %%
 %% This function does not support parsing of transfer-parameter.
 
@@ -2901,7 +3075,7 @@ horse_parse_te() ->
 	).
 -endif.
 
-%% @doc Parse the Trailer header.
+%% Trailer header.
 
 -spec parse_trailer(binary()) -> [binary()].
 parse_trailer(Trailer) ->
@@ -2926,7 +3100,7 @@ horse_parse_trailer() ->
 	).
 -endif.
 
-%% @doc Parse the Transfer-Encoding header.
+%% Transfer-Encoding header.
 %%
 %% This function does not support parsing of transfer-parameter.
 
@@ -2980,7 +3154,7 @@ horse_parse_transfer_encoding_custom() ->
 	).
 -endif.
 
-%% @doc Parse the Upgrade header.
+%% Upgrade header.
 %%
 %% It is unclear from the RFC whether the values here are
 %% case sensitive.
@@ -3043,7 +3217,131 @@ parse_upgrade_error_test_() ->
 		|| V <- Tests].
 -endif.
 
-%% @doc Parse the Vary header.
+%% Variant-Key-06 (draft) header.
+%%
+%% The Variants header must be parsed first in order to know
+%% the NumMembers argument as it is the number of members in
+%% the Variants dictionary.
+
+-spec parse_variant_key(binary(), pos_integer()) -> [[binary()]].
+parse_variant_key(VariantKey, NumMembers) ->
+	List = cow_http_struct_hd:parse_list(VariantKey),
+	[case Inner of
+		{with_params, InnerList, #{}} ->
+			NumMembers = length(InnerList),
+			[case Item of
+				{with_params, {token, Value}, #{}} -> Value;
+				{with_params, {string, Value}, #{}} -> Value
+			end || Item <- InnerList]
+	end || Inner <- List].
+
+-ifdef(TEST).
+parse_variant_key_test_() ->
+	Tests = [
+		{<<"(en)">>, 1, [[<<"en">>]]},
+		{<<"(gzip fr)">>, 2, [[<<"gzip">>, <<"fr">>]]},
+		{<<"(gzip fr), (\"identity\" fr)">>, 2, [[<<"gzip">>, <<"fr">>], [<<"identity">>, <<"fr">>]]},
+		{<<"(\"gzip \" fr)">>, 2, [[<<"gzip ">>, <<"fr">>]]},
+		{<<"(en br)">>, 2, [[<<"en">>, <<"br">>]]},
+		{<<"(\"0\")">>, 1, [[<<"0">>]]},
+		{<<"(silver), (\"bronze\")">>, 1, [[<<"silver">>], [<<"bronze">>]]},
+		{<<"(some_person)">>, 1, [[<<"some_person">>]]},
+		{<<"(gold europe)">>, 2, [[<<"gold">>, <<"europe">>]]}
+	],
+	[{V, fun() -> R = parse_variant_key(V, N) end} || {V, N, R} <- Tests].
+
+parse_variant_key_error_test_() ->
+	Tests = [
+		{<<"(gzip fr), (identity fr), (br fr oops)">>, 2}
+	],
+	[{V, fun() -> {'EXIT', _} = (catch parse_variant_key(V, N)) end} || {V, N} <- Tests].
+-endif.
+
+-spec variant_key([[binary()]]) -> iolist().
+%% We assume that the lists are of correct length.
+variant_key(VariantKeys) ->
+	cow_http_struct_hd:list([
+		{with_params, [
+			{with_params, {string, Value}, #{}}
+		|| Value <- InnerList], #{}}
+	|| InnerList <- VariantKeys]).
+
+-ifdef(TEST).
+variant_key_identity_test_() ->
+	Tests = [
+		{1, [[<<"en">>]]},
+		{2, [[<<"gzip">>, <<"fr">>]]},
+		{2, [[<<"gzip">>, <<"fr">>], [<<"identity">>, <<"fr">>]]},
+		{2, [[<<"gzip ">>, <<"fr">>]]},
+		{2, [[<<"en">>, <<"br">>]]},
+		{1, [[<<"0">>]]},
+		{1, [[<<"silver">>], [<<"bronze">>]]},
+		{1, [[<<"some_person">>]]},
+		{2, [[<<"gold">>, <<"europe">>]]}
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> V = parse_variant_key(iolist_to_binary(variant_key(V)), N) end} || {N, V} <- Tests].
+-endif.
+
+%% Variants-06 (draft) header.
+
+-spec parse_variants(binary()) -> [{binary(), [binary()]}].
+parse_variants(Variants) ->
+	{Dict0, Order} = cow_http_struct_hd:parse_dictionary(Variants),
+	Dict = maps:map(fun(_, {with_params, List, #{}}) ->
+		[case Item of
+			{with_params, {token, Value}, #{}} -> Value;
+			{with_params, {string, Value}, #{}} -> Value
+		end || Item <- List]
+	end, Dict0),
+	[{Key, maps:get(Key, Dict)} || Key <- Order].
+
+-ifdef(TEST).
+parse_variants_test_() ->
+	Tests = [
+		{<<"accept-language=(de en jp)">>, [{<<"accept-language">>, [<<"de">>, <<"en">>, <<"jp">>]}]},
+		{<<"accept-encoding=(gzip)">>, [{<<"accept-encoding">>, [<<"gzip">>]}]},
+		{<<"accept-encoding=()">>, [{<<"accept-encoding">>, []}]},
+		{<<"accept-encoding=(gzip br), accept-language=(en fr)">>, [
+			{<<"accept-encoding">>, [<<"gzip">>, <<"br">>]},
+			{<<"accept-language">>, [<<"en">>, <<"fr">>]}
+		]},
+		{<<"accept-language=(en fr de), accept-encoding=(gzip br)">>, [
+			{<<"accept-language">>, [<<"en">>, <<"fr">>, <<"de">>]},
+			{<<"accept-encoding">>, [<<"gzip">>, <<"br">>]}
+		]}
+	],
+	[{V, fun() -> R = parse_variants(V) end} || {V, R} <- Tests].
+-endif.
+
+-spec variants([{binary(), [binary()]}]) -> iolist().
+variants(Variants) ->
+	cow_http_struct_hd:dictionary([
+		{Key, {with_params, [
+			{with_params, {string, Value}, #{}}
+		|| Value <- List], #{}}}
+	|| {Key, List} <- Variants]).
+
+-ifdef(TEST).
+variants_identity_test_() ->
+	Tests = [
+		[{<<"accept-language">>, [<<"de">>, <<"en">>, <<"jp">>]}],
+		[{<<"accept-encoding">>, [<<"gzip">>]}],
+		[{<<"accept-encoding">>, []}],
+		[
+			{<<"accept-encoding">>, [<<"gzip">>, <<"br">>]},
+			{<<"accept-language">>, [<<"en">>, <<"fr">>]}
+		],
+		[
+			{<<"accept-language">>, [<<"en">>, <<"fr">>, <<"de">>]},
+			{<<"accept-encoding">>, [<<"gzip">>, <<"br">>]}
+		]
+	],
+	[{lists:flatten(io_lib:format("~p", [V])),
+		fun() -> V = parse_variants(iolist_to_binary(variants(V))) end} || V <- Tests].
+-endif.
+
+%% Vary header.
 
 -spec parse_vary(binary()) -> '*' | [binary()].
 parse_vary(<<"*">>) ->
@@ -3067,7 +3365,7 @@ parse_vary_error_test_() ->
 	[{V, fun() -> {'EXIT', _} = (catch parse_vary(V)) end} || V <- Tests].
 -endif.
 
-%% @doc Parse the WWW-Authenticate header.
+%% WWW-Authenticate header.
 %%
 %% Unknown schemes are represented as the lowercase binary
 %% instead of an atom. Unlike with parse_authorization/1,
@@ -3222,7 +3520,7 @@ horse_parse_www_authenticate() ->
 	).
 -endif.
 
-%% @doc Parse the X-Forwarded-For header.
+%% X-Forwarded-For header.
 %%
 %% This header has no specification but *looks like* it is
 %% a list of tokens.
@@ -3286,149 +3584,6 @@ parse_x_forwarded_for_error_test_() ->
 		<<>>
 	],
 	[{V, fun() -> {'EXIT', _} = (catch parse_x_forwarded_for(V)) end} || V <- Tests].
--endif.
-
-%% Building.
-
-%% @doc Build the Access-Control-Allow-Credentials header.
-
--spec access_control_allow_credentials() -> iodata().
-access_control_allow_credentials() -> <<"true">>.
-
-%% @doc Build the Access-Control-Allow-Headers header.
-
--spec access_control_allow_headers([binary()]) -> iodata().
-access_control_allow_headers(Headers) ->
-	join_token_list(nonempty(Headers)).
-
--ifdef(TEST).
-access_control_allow_headers_test_() ->
-	Tests = [
-		{[<<"accept">>], <<"accept">>},
-		{[<<"accept">>, <<"authorization">>, <<"content-type">>], <<"accept, authorization, content-type">>}
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> R = iolist_to_binary(access_control_allow_headers(V)) end} || {V, R} <- Tests].
-
-access_control_allow_headers_error_test_() ->
-	Tests = [
-		[]
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> {'EXIT', _} = (catch access_control_allow_headers(V)) end} || V <- Tests].
-
-horse_access_control_allow_headers() ->
-	horse:repeat(200000,
-		access_control_allow_headers([<<"accept">>, <<"authorization">>, <<"content-type">>])
-	).
--endif.
-
-%% @doc Build the Access-Control-Allow-Methods header.
-
--spec access_control_allow_methods([binary()]) -> iodata().
-access_control_allow_methods(Methods) ->
-	join_token_list(nonempty(Methods)).
-
--ifdef(TEST).
-access_control_allow_methods_test_() ->
-	Tests = [
-		{[<<"GET">>], <<"GET">>},
-		{[<<"GET">>, <<"POST">>, <<"DELETE">>], <<"GET, POST, DELETE">>}
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> R = iolist_to_binary(access_control_allow_methods(V)) end} || {V, R} <- Tests].
-
-access_control_allow_methods_error_test_() ->
-	Tests = [
-		[]
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> {'EXIT', _} = (catch access_control_allow_methods(V)) end} || V <- Tests].
-
-horse_access_control_allow_methods() ->
-	horse:repeat(200000,
-		access_control_allow_methods([<<"GET">>, <<"POST">>, <<"DELETE">>])
-	).
--endif.
-
-%% @doc Build the Access-Control-Allow-Origin header.
-
--spec access_control_allow_origin({binary(), binary(), 0..65535} | reference() | '*') -> iodata().
-access_control_allow_origin({Scheme, Host, Port}) ->
-	case default_port(Scheme) of
-		Port -> [Scheme, <<"://">>, Host];
-		_ -> [Scheme, <<"://">>, Host, <<":">>, integer_to_binary(Port)]
-	end;
-access_control_allow_origin('*') -> <<$*>>;
-access_control_allow_origin(Ref) when is_reference(Ref) -> <<"null">>.
-
--ifdef(TEST).
-access_control_allow_origin_test_() ->
-	Tests = [
-		{{<<"http">>, <<"www.example.org">>, 8080}, <<"http://www.example.org:8080">>},
-		{{<<"http">>, <<"www.example.org">>, 80}, <<"http://www.example.org">>},
-		{{<<"http">>, <<"192.0.2.1">>, 8080}, <<"http://192.0.2.1:8080">>},
-		{{<<"http">>, <<"192.0.2.1">>, 80}, <<"http://192.0.2.1">>},
-		{{<<"http">>, <<"[2001:db8::1]">>, 8080}, <<"http://[2001:db8::1]:8080">>},
-		{{<<"http">>, <<"[2001:db8::1]">>, 80}, <<"http://[2001:db8::1]">>},
-		{{<<"http">>, <<"[::ffff:192.0.2.1]">>, 8080}, <<"http://[::ffff:192.0.2.1]:8080">>},
-		{{<<"http">>, <<"[::ffff:192.0.2.1]">>, 80}, <<"http://[::ffff:192.0.2.1]">>},
-		{make_ref(), <<"null">>},
-		{'*', <<$*>>}
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> R = iolist_to_binary(access_control_allow_origin(V)) end} || {V, R} <- Tests].
-
-horse_access_control_allow_origin() ->
-	horse:repeat(200000,
-		access_control_allow_origin({<<"http">>, <<"example.org">>, 8080})
-	).
--endif.
-
-%% @doc Build the Access-Control-Expose-Headers header.
-
--spec access_control_expose_headers([binary()]) -> iodata().
-access_control_expose_headers(Headers) ->
-	join_token_list(nonempty(Headers)).
-
--ifdef(TEST).
-access_control_expose_headers_test_() ->
-	Tests = [
-		{[<<"accept">>], <<"accept">>},
-		{[<<"accept">>, <<"authorization">>, <<"content-type">>], <<"accept, authorization, content-type">>}
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> R = iolist_to_binary(access_control_expose_headers(V)) end} || {V, R} <- Tests].
-
-access_control_expose_headers_error_test_() ->
-	Tests = [
-		[]
-	],
-	[{lists:flatten(io_lib:format("~p", [V])),
-		fun() -> {'EXIT', _} = (catch access_control_expose_headers(V)) end} || V <- Tests].
-
-horse_access_control_expose_headers() ->
-	horse:repeat(200000,
-		access_control_expose_headers([<<"accept">>, <<"authorization">>, <<"content-type">>])
-	).
--endif.
-
-%% @doc Build the Access-Control-Max-Age header.
-
--spec access_control_max_age(non_neg_integer()) -> iodata().
-access_control_max_age(MaxAge) -> integer_to_binary(MaxAge).
-
--ifdef(TEST).
-access_control_max_age_test_() ->
-	Tests = [
-		{0, <<"0">>},
-		{42, <<"42">>},
-		{69, <<"69">>},
-		{1337, <<"1337">>},
-		{3495, <<"3495">>},
-		{1234567890, <<"1234567890">>}
-	],
-	[{V, fun() -> R = access_control_max_age(V) end} || {V, R} <- Tests].
 -endif.
 
 %% Internal.

@@ -72,19 +72,19 @@ defmodule Phoenix.HTML.Tag do
       "<option data-foo=\"bar\" value=\"value\">Display Value</option>"
 
   """
-  def content_tag(name, do: block) when is_atom(name) do
+  def content_tag(name, do: block) do
     content_tag(name, block, [])
   end
 
-  def content_tag(name, content) when is_atom(name) do
+  def content_tag(name, content) do
     content_tag(name, content, [])
   end
 
-  def content_tag(name, attrs, do: block) when is_atom(name) and is_list(attrs) do
+  def content_tag(name, attrs, do: block) when is_list(attrs) do
     content_tag(name, block, attrs)
   end
 
-  def content_tag(name, content, attrs) when is_atom(name) and is_list(attrs) do
+  def content_tag(name, content, attrs) when is_list(attrs) do
     name = to_string(name)
     {:safe, escaped} = html_escape(content)
     {:safe, [?<, name, build_attrs(name, attrs), ?>, escaped, ?<, ?/, name, ?>]}
@@ -173,23 +173,7 @@ defmodule Phoenix.HTML.Tag do
       include an input tag with name `_csrf_token`. When set to false, this
       is disabled
 
-    * `:enforce_utf8` - when false, does not enforce utf8. Read below
-      for more information
-
   All other options are passed to the underlying HTML tag.
-
-  ## Enforce UTF-8
-
-  Although forms provide the `accept-charset` attribute, which we set
-  to UTF-8, Internet Explorer 5 up to 8 may ignore the value of this
-  attribute if the user chooses their browser to do so. This ends up
-  triggering the browser to send data in a format that is not
-  understandable by the server.
-
-  For this reason, Phoenix automatically includes a "_utf8=✓" parameter
-  in your forms, to force those browsers to send the data in the proper
-  encoding. This technique has been seen in the Rails web framework and
-  reproduced here.
 
   ## CSRF Protection
 
@@ -222,16 +206,6 @@ defmodule Phoenix.HTML.Tag do
             Keyword.put(opts, :method, "post"),
             ~s'<input name="#{@method_param}" type="hidden" value="#{method}">'
           )
-      end
-
-    {opts, extra} =
-      case Keyword.pop(opts, :enforce_utf8, true) do
-        {false, opts} ->
-          {opts, extra}
-
-        {true, opts} ->
-          {Keyword.put_new(opts, :accept_charset, "UTF-8"),
-           extra <> ~s'<input name="_utf8" type="hidden" value="✓">'}
       end
 
     opts =
@@ -299,26 +273,44 @@ defmodule Phoenix.HTML.Tag do
   ## Examples
 
       img_tag(user.photo_path)
-      <img src="photo.png">
+      <img src="/photo.png">
 
       img_tag(user.photo, class: "image")
-      <img src="smile.png" class="image">
+      <img src="/smile.png" class="image">
 
   To generate a path to an image hosted in your application "priv/static",
-  use `static_path/1` to get a URL with cache control parameters:
-
-      img_tag(Routes.static_path("logo.png"))
-      <img src="logo.png?vsn=3456789">
-
-  To generate a path to an image hosted in your application "priv/static",
-  with the `@conn` endpoint, use `static_path/2` to get a URL with 
+  with the `@conn` endpoint, use `static_path/2` to get a URL with
   cache control parameters:
 
-      img_tag(Routes.static_path(@conn, "/images/logo.png"))
-      <img src="logo.png?vsn=3456789">
+      img_tag(Routes.static_path(@conn, "/logo.png"))
+      <img src="/logo-123456.png?vsn=d">
+
+  For responsive images, pass a map, list or string through `:srcset`.
+
+      img_tag("/logo.png", srcset: %{"/logo.png" => "1x", "/logo-2x.png" => "2x"})
+      <img src="/logo.png" srcset="/logo.png 1x, /logo-2x.png 2x">
+
+      img_tag("/logo.png", srcset: ["/logo.png", {"/logo-2x.png", "2x"}])
+      <img src="/logo.png" srcset="/logo.png, /logo-2x.png 2x">
 
   """
   def img_tag(src, opts \\ []) do
+    opts =
+      case Keyword.pop(opts, :srcset) do
+        {nil, opts} -> opts
+        {srcset, opts} -> [srcset: stringify_srcset(srcset)] ++ opts
+      end
+
     tag(:img, Keyword.put_new(opts, :src, src))
   end
+
+  defp stringify_srcset(srcset) when is_map(srcset) or is_list(srcset) do
+    Enum.map_join(srcset, ", ", fn
+      {src, descriptor} -> "#{src} #{descriptor}"
+      default -> default
+    end)
+  end
+
+  defp stringify_srcset(srcset) when is_binary(srcset),
+    do: srcset
 end

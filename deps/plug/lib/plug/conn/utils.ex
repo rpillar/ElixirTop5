@@ -3,7 +3,7 @@ defmodule Plug.Conn.Utils do
   Utilities for working with connection data
   """
 
-  @type params :: %{binary => binary}
+  @type params :: %{optional(binary) => binary}
 
   @upper ?A..?Z
   @lower ?a..?z
@@ -268,15 +268,19 @@ defmodule Plug.Conn.Utils do
   @spec validate_utf8!(binary, module, binary) :: :ok | no_return
   def validate_utf8!(binary, exception, context)
 
-  def validate_utf8!(<<_::utf8, t::binary>>, exception, context) do
-    validate_utf8!(t, exception, context)
+  def validate_utf8!(<<binary::binary>>, exception, context) do
+    do_validate_utf8!(binary, exception, context)
   end
 
-  def validate_utf8!(<<h, _::binary>>, exception, context) do
-    raise exception, message: "invalid UTF-8 on #{context}, got byte #{h}"
+  defp do_validate_utf8!(<<_::utf8, rest::bits>>, exception, context) do
+    do_validate_utf8!(rest, exception, context)
   end
 
-  def validate_utf8!(<<>>, _exception, _context) do
+  defp do_validate_utf8!(<<byte, _::bits>>, exception, context) do
+    raise exception, "invalid UTF-8 on #{context}, got byte #{byte}"
+  end
+
+  defp do_validate_utf8!(<<>>, _exception, _context) do
     :ok
   end
 

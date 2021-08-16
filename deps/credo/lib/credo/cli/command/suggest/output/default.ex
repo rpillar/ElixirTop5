@@ -131,7 +131,7 @@ defmodule Credo.CLI.Command.Suggest.Output.Default do
       [
         UI.edge(color),
         :faint,
-        " ...  (#{not_shown} more, use `-a` to show them)"
+        " ...  (#{not_shown} more, use `--all` to show them)"
       ]
       |> UI.puts()
     end
@@ -173,7 +173,7 @@ defmodule Credo.CLI.Command.Suggest.Output.Default do
            priority: priority
          } = issue,
          source_file,
-         %Execution{format: _} = exec,
+         %Execution{format: _, verbose: verbose} = exec,
          term_width
        ) do
     outer_color = Output.check_color(issue)
@@ -186,6 +186,13 @@ defmodule Credo.CLI.Command.Suggest.Output.Default do
         :faint
       else
         :bright
+      end
+
+    message =
+      if verbose do
+        message <> " (" <> inspect(check) <> ")"
+      else
+        message
       end
 
     message

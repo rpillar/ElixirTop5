@@ -74,6 +74,25 @@ defmodule Ecto.Integration.MigrationTest do
     use Ecto.Migration
 
     def change do
+      create table(:modify_from_products) do
+        add :value, :integer
+      end
+
+      if direction() == :up do
+        flush()
+        PoolRepo.insert_all "modify_from_products", [[value: 1]]
+      end
+
+      alter table(:modify_from_products) do
+        modify :value, :bigint, from: :integer
+      end
+    end
+  end
+
+  defmodule AlterColumnFromPkeyMigration do
+    use Ecto.Migration
+
+    def change do
       create table(:modify_from_authors, primary_key: false) do
         add :id, :integer, primary_key: true
       end
@@ -114,10 +133,6 @@ defmodule Ecto.Integration.MigrationTest do
       alter table(:alter_fk_posts) do
         modify :alter_fk_user_id, references(:alter_fk_users, on_delete: :nilify_all)
       end
-
-      execute "INSERT INTO alter_fk_users (id) VALUES ('1')"
-      execute "INSERT INTO alter_fk_posts (id, alter_fk_user_id) VALUES ('1', '1')"
-      execute "DELETE FROM alter_fk_users"
     end
 
     def down do
@@ -139,10 +154,6 @@ defmodule Ecto.Integration.MigrationTest do
       alter table(:alter_fk_posts) do
         modify :alter_fk_user_id, references(:alter_fk_users, on_update: :update_all)
       end
-
-      execute "INSERT INTO alter_fk_users (id) VALUES ('1')"
-      execute "INSERT INTO alter_fk_posts (id, alter_fk_user_id) VALUES ('1', '1')"
-      execute "UPDATE alter_fk_users SET id = '2'"
     end
 
     def down do
@@ -210,6 +221,23 @@ defmodule Ecto.Integration.MigrationTest do
       drop table(:ref_migration)
       drop table(:parent1)
       drop table(:parent2)
+    end
+  end
+
+  defmodule CompositeForeignKeyMigration do
+    use Ecto.Migration
+
+    def change do
+      create table(:composite_parent) do
+        add :key_id, :integer
+      end
+
+      create unique_index(:composite_parent, [:id, :key_id])
+
+      create table(:composite_child) do
+        add :parent_key_id, :integer
+        add :parent_id, references(:composite_parent, with: [parent_key_id: :key_id])
+      end
     end
   end
 
@@ -330,6 +358,67 @@ defmodule Ecto.Integration.MigrationTest do
     end
   end
 
+
+  defmodule AddColumnIfNotExistsMigration do
+    use Ecto.Migration
+
+    def up do
+      create table(:add_col_if_not_exists_migration)
+
+      alter table(:add_col_if_not_exists_migration) do
+        add_if_not_exists :value, :integer
+        add_if_not_exists :to_be_added, :integer
+      end
+
+      execute "INSERT INTO add_col_if_not_exists_migration (value, to_be_added) VALUES (1, 2)"
+    end
+
+    def down do
+      drop table(:add_col_if_not_exists_migration)
+    end
+  end
+
+  defmodule DropColumnIfExistsMigration do
+    use Ecto.Migration
+
+    def up do
+      create table(:drop_col_if_exists_migration) do
+        add :value, :integer
+        add :to_be_removed, :integer
+      end
+
+      execute "INSERT INTO drop_col_if_exists_migration (value, to_be_removed) VALUES (1, 2)"
+
+      alter table(:drop_col_if_exists_migration) do
+        remove_if_exists :to_be_removed, :integer
+      end
+    end
+
+    def down do
+      drop table(:drop_col_if_exists_migration)
+    end
+  end
+
+  defmodule NoErrorOnConditionalColumnMigration do
+    use Ecto.Migration
+
+    def up do
+      create table(:no_error_on_conditional_column_migration)
+
+      alter table(:no_error_on_conditional_column_migration) do
+        add_if_not_exists  :value, :integer
+        add_if_not_exists  :value, :integer
+
+        remove_if_exists :value, :integer
+        remove_if_exists :value, :integer
+      end
+    end
+
+    def down do
+      drop table(:no_error_on_conditional_column_migration)
+    end
+  end
+
   import Ecto.Query, only: [from: 2]
   import Ecto.Migrator, only: [up: 4, down: 4]
 
@@ -351,7 +440,7 @@ defmodule Ecto.Integration.MigrationTest do
     assert :ok == down(PoolRepo, num, InferredDropIndexMigration, log: false)
   end
 
-  test "supports references", %{migration_number: num} do
+  test "supports on delete", %{migration_number: num} do
     assert :ok == up(PoolRepo, num, OnDeleteMigration, log: false)
 
     parent1 = PoolRepo.insert! Ecto.put_meta(%Parent{}, source: "parent1")
@@ -370,6 +459,18 @@ defmodule Ecto.Integration.MigrationTest do
     assert PoolRepo.all(reader) == []
 
     assert :ok == down(PoolRepo, num, OnDeleteMigration, log: false)
+  end
+
+  test "composite foreign keys", %{migration_number: num} do
+    assert :ok == up(PoolRepo, num, CompositeForeignKeyMigration, log: false)
+
+    PoolRepo.insert_all("composite_parent", [[key_id: 2]])
+    assert [id] = PoolRepo.all(from p in "composite_parent", select: p.id)
+
+    catch_error(PoolRepo.insert_all("composite_child", [[parent_id: id, parent_key_id: 1]]))
+    assert {1, nil} = PoolRepo.insert_all("composite_child", [[parent_id: id, parent_key_id: 2]])
+
+    assert :ok == down(PoolRepo, num, CompositeForeignKeyMigration, log: false)
   end
 
   test "rolls back references in change/1", %{migration_number: num} do
@@ -418,27 +519,52 @@ defmodule Ecto.Integration.MigrationTest do
     :ok = down(PoolRepo, num, AlterColumnMigration, log: false)
   end
 
-  @tag :modify_column_with_from
+  @tag :modify_column
   test "modify column with from", %{migration_number: num} do
     assert :ok == up(PoolRepo, num, AlterColumnFromMigration, log: false)
 
     assert [1] ==
-           PoolRepo.all from p in "modify_from_posts", select: p.author_id
+           PoolRepo.all from p in "modify_from_products", select: p.value
 
     :ok = down(PoolRepo, num, AlterColumnFromMigration, log: false)
   end
 
-  @tag :modify_foreign_key_on_delete
+  @tag :alter_primary_key
+  test "modify column with from and pkey", %{migration_number: num} do
+    assert :ok == up(PoolRepo, num, AlterColumnFromPkeyMigration, log: false)
+
+    assert [1] ==
+           PoolRepo.all from p in "modify_from_posts", select: p.author_id
+
+    :ok = down(PoolRepo, num, AlterColumnFromPkeyMigration, log: false)
+  end
+
+  @tag :alter_foreign_key
   test "modify foreign key's on_delete constraint", %{migration_number: num} do
     assert :ok == up(PoolRepo, num, AlterForeignKeyOnDeleteMigration, log: false)
+
+    PoolRepo.insert_all("alter_fk_users", [[]])
+    assert [id] = PoolRepo.all from p in "alter_fk_users", select: p.id
+
+    PoolRepo.insert_all("alter_fk_posts", [[alter_fk_user_id: id]])
+    PoolRepo.delete_all("alter_fk_users")
     assert [nil] == PoolRepo.all from p in "alter_fk_posts", select: p.alter_fk_user_id
+
     :ok = down(PoolRepo, num, AlterForeignKeyOnDeleteMigration, log: false)
   end
 
-  @tag :modify_foreign_key_on_update
+  @tag :assigns_id_type
   test "modify foreign key's on_update constraint", %{migration_number: num} do
     assert :ok == up(PoolRepo, num, AlterForeignKeyOnUpdateMigration, log: false)
-    assert [2] == PoolRepo.all from p in "alter_fk_posts", select: p.alter_fk_user_id
+
+    PoolRepo.insert_all("alter_fk_users", [[]])
+    assert [id] = PoolRepo.all from p in "alter_fk_users", select: p.id
+
+    PoolRepo.insert_all("alter_fk_posts", [[alter_fk_user_id: id]])
+    PoolRepo.update_all("alter_fk_users", set: [id: 12345])
+    assert [12345] == PoolRepo.all from p in "alter_fk_posts", select: p.alter_fk_user_id
+
+    PoolRepo.delete_all("alter_fk_posts")
     :ok = down(PoolRepo, num, AlterForeignKeyOnUpdateMigration, log: false)
   end
 
@@ -472,5 +598,26 @@ defmodule Ecto.Integration.MigrationTest do
   test "alter primary key", %{migration_number: num} do
     assert :ok == up(PoolRepo, num, AlterPrimaryKeyMigration, log: false)
     assert :ok == down(PoolRepo, num, AlterPrimaryKeyMigration, log: false)
+  end
+
+  @tag :add_column_if_not_exists
+  @tag :remove_column_if_exists
+  test "add if not exists and remove if exists does not raise on failure", %{migration_number: num} do
+    assert :ok == up(PoolRepo, num, NoErrorOnConditionalColumnMigration, log: false)
+    assert :ok == down(PoolRepo, num, NoErrorOnConditionalColumnMigration, log: false)
+  end
+
+  @tag :add_column_if_not_exists
+  test "add column if not exists", %{migration_number: num} do
+    assert :ok == up(PoolRepo, num, AddColumnIfNotExistsMigration, log: false)
+    assert [2] == PoolRepo.all from p in "add_col_if_not_exists_migration", select: p.to_be_added
+    :ok = down(PoolRepo, num, AddColumnIfNotExistsMigration, log: false)
+  end
+
+  @tag :remove_column_if_exists
+  test "remove column when exists", %{migration_number: num} do
+    assert :ok == up(PoolRepo, num, DropColumnIfExistsMigration, log: false)
+    assert catch_error(PoolRepo.all from p in "drop_col_if_exists_migration", select: p.to_be_removed)
+    :ok = down(PoolRepo, num, DropColumnIfExistsMigration, log: false)
   end
 end

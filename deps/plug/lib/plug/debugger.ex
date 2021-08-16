@@ -15,6 +15,10 @@ defmodule Plug.Debugger do
   that `Plug.Debugger` is used before `Plug.ErrorHandler` and only in
   particular environments, like `:dev`.
 
+  In case of an error, the rendered page drops the `content-security-policy`
+  header before rendering the error to ensure that the error is displayed
+  correctly.
+
   ## Examples
 
       defmodule MyApp do
@@ -63,7 +67,7 @@ defmodule Plug.Debugger do
   You may pass an MFA (`{module, function, args}`) to be invoked when an
   error is rendered which provides a custom banner at the top of the
   debugger page. The function receives the following arguments, with the
-  passed `args` concentated at the end:
+  passed `args` concatenated at the end:
 
       [conn, status, kind, reason, stacktrace]
 
@@ -84,6 +88,9 @@ defmodule Plug.Debugger do
 
       txmt://open/?url=file://__FILE__&line=__LINE__
 
+  Or, using Visual Studio Code:
+
+      vscode://file/__FILE__:__LINE__
   """
 
   @already_sent {:plug_conn, :sent}
@@ -100,6 +107,8 @@ defmodule Plug.Debugger do
     logo: @logo,
     monospace_font: "menlo, consolas, monospace"
   }
+
+  @salt "plug-debugger-actions"
 
   import Plug.Conn
   require Logger
@@ -119,14 +128,20 @@ defmodule Plug.Debugger do
 
       def call(conn, opts) do
         try do
-          super(conn, opts)
+          case conn do
+            %Plug.Conn{path_info: ["__plug__", "debugger", "action"], method: "POST"} ->
+              Plug.Debugger.run_action(conn)
+
+            %Plug.Conn{} ->
+              super(conn, opts)
+          end
         rescue
           e in Plug.Conn.WrapperError ->
             %{conn: conn, kind: kind, reason: reason, stack: stack} = e
             Plug.Debugger.__catch__(conn, kind, reason, stack, @plug_debugger)
         catch
           kind, reason ->
-            Plug.Debugger.__catch__(conn, kind, reason, System.stacktrace(), @plug_debugger)
+            Plug.Debugger.__catch__(conn, kind, reason, __STACKTRACE__, @plug_debugger)
         end
       end
     end
@@ -176,7 +191,13 @@ defmodule Plug.Debugger do
     banner = banner(conn, status, kind, reason, stack, opts)
 
     if accepts_html?(get_req_header(conn, "accept")) do
-      conn = put_resp_content_type(conn, "text/html")
+      conn =
+        conn
+        |> put_resp_content_type("text/html")
+        |> delete_resp_header("content-security-policy")
+
+      actions = encoded_actions_for_exception(reason, conn)
+      last_path = actions_redirect_path(conn)
 
       assigns = [
         conn: conn,
@@ -186,18 +207,14 @@ defmodule Plug.Debugger do
         session: session,
         params: params,
         style: style,
-        banner: banner
+        banner: banner,
+        actions: actions,
+        last_path: last_path
       ]
 
       send_resp(conn, status, template_html(assigns))
     else
-      # TODO: Remove exported check once we depend on Elixir v1.5 only
-      {reason, stack} =
-        if function_exported?(Exception, :blame, 3) do
-          apply(Exception, :blame, [kind, reason, stack])
-        else
-          {reason, stack}
-        end
+      {reason, stack} = Exception.blame(kind, reason, stack)
 
       conn = put_resp_content_type(conn, "text/markdown")
 
@@ -210,6 +227,53 @@ defmodule Plug.Debugger do
       ]
 
       send_resp(conn, status, template_markdown(assigns))
+    end
+  end
+
+  @doc false
+  def run_action(%Plug.Conn{} = conn) do
+    with %Plug.Conn{body_params: params} <- fetch_body_params(conn),
+         {:ok, {module, function, args}} <-
+           Plug.Crypto.verify(conn.secret_key_base, @salt, params["encoded_handler"]) do
+      apply(module, function, args)
+
+      conn
+      |> Plug.Conn.put_resp_header("location", params["last_path"] || "/")
+      |> send_resp(302, "")
+      |> halt()
+    else
+      _ -> raise "could not run Plug.Debugger action"
+    end
+  end
+
+  @doc false
+  def encoded_actions_for_exception(exception, conn) do
+    exception_implementation = Plug.Exception.impl_for(exception)
+
+    implements_actions? =
+      Code.ensure_loaded?(exception_implementation) &&
+        function_exported?(exception_implementation, :actions, 1)
+
+    # TODO: Remove implements_actions? in future Plug versions
+    if implements_actions? && conn.secret_key_base do
+      actions = Plug.Exception.actions(exception)
+
+      Enum.map(actions, fn %{label: label, handler: handler} ->
+        encoded_handler = Plug.Crypto.sign(conn.secret_key_base, @salt, handler)
+        %{label: label, encoded_handler: encoded_handler}
+      end)
+    else
+      []
+    end
+  end
+
+  defp actions_redirect_path(%Plug.Conn{method: "GET", request_path: request_path}),
+    do: request_path
+
+  defp actions_redirect_path(conn) do
+    case get_req_header(conn, "referer") do
+      [referer] -> referer
+      [] -> "/"
     end
   end
 
@@ -234,6 +298,9 @@ defmodule Plug.Debugger do
       end
   end
 
+  @parsers_opts Plug.Parsers.init(parsers: [:urlencoded])
+  defp fetch_body_params(conn), do: Plug.Parsers.call(conn, @parsers_opts)
+
   defp status(:error, error), do: Plug.Exception.status(error)
   defp status(_, _), do: 500
 
@@ -256,7 +323,7 @@ defmodule Plug.Debugger do
 
     doc = module && get_doc(module, fun, arity, app)
     clauses = module && get_clauses(module, fun, args)
-    source = get_source(module, file)
+    source = get_source(app, module, file)
     context = get_context(root, app)
     snippet = get_snippet(source, line)
 
@@ -322,42 +389,34 @@ defmodule Plug.Debugger do
     end
   end
 
-  # TODO: Remove exported check once we depend on Elixir v1.7+
-  if Code.ensure_loaded?(Code) and function_exported?(Code, :fetch_docs, 1) do
-    def has_docs?(module, name, arity) do
-      case Code.fetch_docs(module) do
-        {:docs_v1, _, _, _, module_doc, _, docs} when module_doc != :hidden ->
-          Enum.any?(docs, has_doc_matcher?(name, arity))
+  defp has_docs?(module, name, arity) do
+    case Code.fetch_docs(module) do
+      {:docs_v1, _, _, _, module_doc, _, docs} when module_doc != :hidden ->
+        Enum.any?(docs, has_doc_matcher?(name, arity))
 
-        _ ->
-          false
-      end
-    end
-
-    defp has_doc_matcher?(name, arity) do
-      &match?(
-        {{kind, ^name, ^arity}, _, _, doc, _}
-        when kind in [:function, :macro] and doc != :hidden,
-        &1
-      )
-    end
-  else
-    def has_docs?(module, fun, arity) do
-      docs = Code.get_docs(module, :docs)
-      not is_nil(docs) and List.keymember?(docs, {fun, arity}, 0)
+      _ ->
+        false
     end
   end
 
+  defp has_doc_matcher?(name, arity) do
+    &match?(
+      {{kind, ^name, ^arity}, _, _, doc, _}
+      when kind in [:function, :macro] and doc != :hidden,
+      &1
+    )
+  end
+
   defp get_clauses(module, fun, args) do
-    # TODO: Remove exported check once we depend on Elixir v1.5 only
-    with true <- is_list(args) and function_exported?(Exception, :blame_mfa, 3),
-         {:ok, kind, clauses} <- apply(Exception, :blame_mfa, [module, fun, args]) do
+    with true <- is_list(args),
+         {:ok, kind, clauses} <- Exception.blame_mfa(module, fun, args) do
       top_10 =
         clauses
         |> Enum.take(10)
         |> Enum.map(fn {args, guards} ->
-          code = Enum.reduce(guards, {fun, [], args}, &{:when, [], [&2, &1]})
-          "#{kind} " <> Macro.to_string(code, &clause_match/2)
+          args = Enum.map_join(args, ", ", &blame_match/1)
+          base = "#{kind} #{fun}(#{args})"
+          Enum.reduce(guards, base, &"#{&2} when #{blame_clause(&1)}")
         end)
 
       {length(top_10), length(clauses), top_10}
@@ -366,21 +425,27 @@ defmodule Plug.Debugger do
     end
   end
 
-  defp clause_match(%{match?: true, node: node}, _),
+  defp blame_match(%{match?: true, node: node}),
     do: ~s(<i class="green">) <> h(Macro.to_string(node)) <> "</i>"
 
-  defp clause_match(%{match?: false, node: node}, _),
+  defp blame_match(%{match?: false, node: node}),
     do: ~s(<i class="red">) <> h(Macro.to_string(node)) <> "</i>"
 
-  defp clause_match(_, string), do: string
+  defp blame_clause({op, _, [left, right]}),
+    do: blame_clause(left) <> " #{op} " <> blame_clause(right)
+
+  defp blame_clause(node), do: blame_match(node)
 
   defp get_context(app, app) when app != nil, do: :app
   defp get_context(_app1, _app2), do: :all
 
-  defp get_source(module, file) do
+  defp get_source(app, module, file) do
     cond do
       File.regular?(file) ->
         file
+
+      File.regular?("apps/#{app}/#{file}") ->
+        "apps/#{app}/#{file}"
 
       source = module && Code.ensure_loaded?(module) && module.module_info(:compile)[:source] ->
         to_string(source)

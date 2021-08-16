@@ -4,18 +4,18 @@ defmodule Plug.Conn.Cookies do
   """
 
   @doc """
-  Decodes the given cookies as given in a request header.
+  Decodes the given cookies as given in either a request or response header.
 
   If a cookie is invalid, it is automatically discarded from the result.
 
   ## Examples
 
-      iex> decode("key1=value1, key2=value2")
+      iex> decode("key1=value1;key2=value2")
       %{"key1" => "value1", "key2" => "value2"}
 
   """
   def decode(cookie) do
-    do_decode(:binary.split(cookie, [";", ","], [:global]), %{})
+    do_decode(:binary.split(cookie, ";", [:global]), %{})
   end
 
   defp do_decode([], acc), do: acc
@@ -28,7 +28,6 @@ defmodule Plug.Conn.Cookies do
   end
 
   defp decode_kv(""), do: false
-  defp decode_kv(<<?$, _::binary>>), do: false
   defp decode_kv(<<h, t::binary>>) when h in [?\s, ?\t], do: decode_kv(t)
   defp decode_kv(kv), do: decode_key(kv, "")
 
@@ -62,6 +61,7 @@ defmodule Plug.Conn.Cookies do
       emit_if(opts[:max_age], &encode_max_age(&1, opts)),
       emit_if(Map.get(opts, :secure, false), "; secure"),
       emit_if(Map.get(opts, :http_only, true), "; HttpOnly"),
+      emit_if(Map.get(opts, :same_site, nil), &encode_same_site/1),
       emit_if(opts[:extra], &["; ", &1])
     ])
   end
@@ -71,6 +71,8 @@ defmodule Plug.Conn.Cookies do
     time = add_seconds(time, max_age)
     ["; expires=", rfc2822(time), "; max-age=", Integer.to_string(max_age)]
   end
+
+  defp encode_same_site(value) when is_binary(value), do: "; SameSite=#{value}"
 
   defp emit_if(value, fun_or_string) do
     cond do

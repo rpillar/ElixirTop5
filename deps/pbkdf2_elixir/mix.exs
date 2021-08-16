@@ -1,22 +1,21 @@
 defmodule Pbkdf2Elixir.Mixfile do
   use Mix.Project
 
-  @version "0.12.4"
-
-  @description """
-  Pbkdf2 password hashing algorithm for Elixir
-  """
+  @source_url "https://github.com/riverrun/pbkdf2_elixir"
+  @version "1.4.1"
 
   def project do
     [
       app: :pbkdf2_elixir,
       version: @version,
-      elixir: "~> 1.4",
+      elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
-      description: @description,
       package: package(),
-      source_url: "https://github.com/riverrun/pbkdf2_elixir",
-      deps: deps()
+      deps: deps(),
+      docs: docs(),
+      dialyzer: [
+        plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
+      ]
     ]
   end
 
@@ -28,15 +27,37 @@ defmodule Pbkdf2Elixir.Mixfile do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.18", only: :dev, runtime: false}
+      {:comeonin, "~> 5.3"},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:dialyxir, "~> 1.0.0", only: :dev, runtime: false}
     ]
   end
 
   defp package do
     [
+      description: "Pbkdf2 password hashing algorithm for Elixir.",
+      files: ["lib", "mix.exs", "README.md", "LICENSE.md", "CHANGELOG.md"],
       maintainers: ["David Whitlock"],
-      licenses: ["BSD"],
-      links: %{"GitHub" => "https://github.com/riverrun/pbkdf2_elixir"}
+      licenses: ["BSD-3-Clause"],
+      links: %{
+        "Changelog" => "https://hexdocs.pm/pbkdf2_elixir/changelog.html",
+        "GitHub" => @source_url
+      }
+    ]
+  end
+
+  defp docs do
+    [
+      extras: [
+        "CHANGELOG.md",
+        {:"LICENSE.md", [title: "License"]},
+        "README.md"
+      ],
+      main: "readme",
+      source_url: @source_url,
+      source_ref: "v#{@version}",
+      formatters: ["html"],
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
     ]
   end
 end

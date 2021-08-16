@@ -1,9 +1,10 @@
 {application,phoenix_html,
-             [{applications,[kernel,stdlib,elixir,logger,plug]},
+             [{applications,[kernel,stdlib,elixir,eex,logger,plug]},
               {description,"Phoenix view functions for working with HTML templates"},
               {modules,['Elixir.Phoenix.HTML','Elixir.Phoenix.HTML.Engine',
                         'Elixir.Phoenix.HTML.Form',
                         'Elixir.Phoenix.HTML.FormData',
+                        'Elixir.Phoenix.HTML.FormData.Atom',
                         'Elixir.Phoenix.HTML.FormData.Plug.Conn',
                         'Elixir.Phoenix.HTML.Format',
                         'Elixir.Phoenix.HTML.Link','Elixir.Phoenix.HTML.Safe',
@@ -20,4 +21,4 @@
                         'Elixir.Phoenix.HTML.Safe.Tuple',
                         'Elixir.Phoenix.HTML.Tag']},
               {registered,[]},
-              {vsn,"2.13.2"}]}.
+              {vsn,"2.14.3"}]}.

@@ -17,7 +17,12 @@ defmodule Plug.RequestId do
   It is recommended to include this metadata configuration in your production
   configuration file.
 
-  To use it, just plug it into the desired module:
+  You can also access the `request_id` programmatically by calling
+  `Logger.metadata[:request_id]`. Do not access it via the request header, as
+  the request header value has not been validated and it may not always be
+  present.
+
+  To use this plug, just plug it into the desired module:
 
       plug Plug.RequestId
 
@@ -35,10 +40,12 @@ defmodule Plug.RequestId do
   alias Plug.Conn
   @behaviour Plug
 
+  @impl true
   def init(opts) do
     Keyword.get(opts, :http_header, "x-request-id")
   end
 
+  @impl true
   def call(conn, req_id_header) do
     conn
     |> get_request_id(req_id_header)

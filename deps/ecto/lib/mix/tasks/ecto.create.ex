@@ -36,8 +36,8 @@ defmodule Mix.Tasks.Ecto.Create do
 
     * `-r`, `--repo` - the repo to create
     * `--quiet` - do not log output
-    * `--no-compile` - do not compile before dropping
-    * `--no-deps-check` - do not compile before dropping
+    * `--no-compile` - do not compile before creating
+    * `--no-deps-check` - do not compile before creating
 
   """
 
@@ -53,11 +53,11 @@ defmodule Mix.Tasks.Ecto.Create do
       case repo.__adapter__.storage_up(repo.config) do
         :ok ->
           unless opts[:quiet] do
-            Mix.shell.info "The database for #{inspect repo} has been created"
+            Mix.shell().info "The database for #{inspect repo} has been created"
           end
         {:error, :already_up} ->
           unless opts[:quiet] do
-            Mix.shell.info "The database for #{inspect repo} has already been created"
+            Mix.shell().info "The database for #{inspect repo} has already been created"
           end
         {:error, term} when is_binary(term) ->
           Mix.raise "The database for #{inspect repo} couldn't be created: #{term}"

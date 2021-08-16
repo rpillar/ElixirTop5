@@ -1,18 +1,20 @@
 # Postgrex
 
-[![Build Status](https://travis-ci.org/elixir-ecto/postgrex.svg?branch=master)](https://travis-ci.org/elixir-ecto/postgrex)
+[![Build Status](https://github.com/elixir-ecto/postgrex/workflows/CI/badge.svg)](https://github.com/elixir-ecto/postgrex/actions)
 
 PostgreSQL driver for Elixir.
 
 Documentation: http://hexdocs.pm/postgrex/
 
-## Example
+## Examples
 
 ```iex
 iex> {:ok, pid} = Postgrex.start_link(hostname: "localhost", username: "postgres", password: "postgres", database: "postgres")
 {:ok, #PID<0.69.0>}
+
 iex> Postgrex.query!(pid, "SELECT user_id, text FROM comments", [])
 %Postgrex.Result{command: :select, empty?: false, columns: ["user_id", "text"], rows: [[3,"hey"],[4,"there"]], size: 2}}
+
 iex> Postgrex.query!(pid, "INSERT INTO comments (user_id, text) VALUES (10, 'heya')", [])
 %Postgrex.Result{command: :insert, columns: nil, rows: nil, num_rows: 1}}
 ```
@@ -22,7 +24,7 @@ iex> Postgrex.query!(pid, "INSERT INTO comments (user_id, text) VALUES (10, 'hey
   * Automatic decoding and encoding of Elixir values to and from PostgreSQL's binary format
   * User defined extensions for encoding and decoding any PostgreSQL type
   * Supports transactions, prepared queries and multiple pools via [DBConnection](https://github.com/elixir-ecto/db_connection)
-  * Supports PostgreSQL 8.4, 9.0-9.6, and 10.0 (hstore is not supported on 8.4)
+  * Supports PostgreSQL 8.4, 9.0-9.6, and later (hstore is not supported on 8.4)
 
 ## Data representation
 
@@ -40,7 +42,7 @@ iex> Postgrex.query!(pid, "INSERT INTO comments (user_id, text) VALUES (10, 'hey
     time(tz)        %Time{hour: 0, minute: 37, second: 14} **
     timestamp       %NaiveDateTime{year: 2013, month: 10, day: 12, hour: 0, minute: 37, second: 14}
     timestamptz     %DateTime{year: 2013, month: 10, day: 12, hour: 0, minute: 37, second: 14, time_zone: "Etc/UTC"} **
-    interval        %Postgrex.Interval{months: 14, days: 40, secs: 10920}
+    interval        %Postgrex.Interval{months: 14, days: 40, secs: 10920, microsecs: 315}
     array           [1, 2, 3]
     composite type  {42, "title", "content"}
     range           %Postgrex.Range{lower: 1, upper: 5}
@@ -57,6 +59,8 @@ iex> Postgrex.query!(pid, "INSERT INTO comments (user_id, text) VALUES (10, 'hey
 \*\* Timezones will always be normalized to UTC or assumed to be UTC when no information is available, either by PostgreSQL or Postgrex
 
 \*\*\* Enumerated types (enum) are custom named database types with strings as values.
+
+\*\*\*\* Anonymous composite types are decoded (read) as tuples but they cannot be encoded (written) to the database
 
 Postgrex does not automatically cast between types. For example, you can't pass a string where a date is expected. To add type casting, support new types, or change how any of the types above are encoded/decoded, you can use extensions.
 
@@ -84,9 +88,9 @@ mix deps.clean postgrex --build
 
 Extensions are used to extend Postgrex' built-in type encoding/decoding.
 
-Here is a [JSON extension](https://github.com/elixir-ecto/postgrex/blob/master/lib/postgrex/extensions/json.ex) that supports encoding/decoding Elixir maps to the Postgres' JSON type.
+The [extensions](https://github.com/elixir-ecto/postgrex/blob/master/lib/postgrex/extensions/) directory in this project provides implementation for many Postgres' built-in data types. It is also a great example of how to implement your own extensions. For example, you can look at the [`Date`](https://github.com/elixir-ecto/postgrex/blob/master/lib/postgrex/extensions/date.ex) extension as a starting point.
 
-Extensions can be specified and configured when building custom type modules:
+Once you defined your extensions, you should build custom type modules, passing all of your extensions as arguments:
 
 ```elixir
 Postgrex.Types.define(MyApp.PostgrexTypes, [MyApp.Postgis.Extensions], [])
@@ -153,11 +157,11 @@ host    all             postgrex_cleartext_pw   127.0.0.1/32    password
 host    all             postgrex_scram_pw       127.0.0.1/32    scram-sha-256
 ```
 
-The server needs to be restarted for the changes to take effect. Additionally you need to setup a Postgres user with the same username as the local user and give it trust or ident in your hba file. Or you can export $PGUSER and $PGPASSWORD before running tests.
+The server needs to be restarted for the changes to take effect. Additionally you need to setup a PostgreSQL user with the same username as the local user and give it trust or ident in your hba file. Or you can export $PGUSER and $PGPASSWORD before running tests.
 
 ### Testing hstore on 9.0
 
-Postgres versions 9.0 does not have the `CREATE EXTENSION` commands. This means we have to locate the postgres installation and run the `hstore.sql` in `contrib` to install `hstore`. Below is an example command to test 9.0 on OS X with homebrew installed postgres:
+PostgreSQL versions 9.0 does not have the `CREATE EXTENSION` commands. This means we have to locate the postgres installation and run the `hstore.sql` in `contrib` to install `hstore`. Below is an example command to test 9.0 on OS X with homebrew installed postgres:
 
 ```
 $ PGVERSION=9.0 PGPATH=/usr/local/share/postgresql9/ mix test

@@ -4,8 +4,8 @@ defmodule Plug.Conn do
   @moduledoc """
   The Plug connection.
 
-  This module defines a `Plug.Conn` struct and the main functions
-  for working with Plug connections.
+  This module defines a struct and the main functions for working with
+  requests and responses in an HTTP connection.
 
   Note request headers are normalized to lowercase and response
   headers are expected to have lowercase keys.
@@ -42,8 +42,8 @@ defmodule Plug.Conn do
     * `body_params` - the request body params, populated through a `Plug.Parsers` parser.
     * `query_params` - the request query params, populated through `fetch_query_params/2`
     * `path_params` - the request path params, populated by routers such as `Plug.Router`
-    * `params` - the request params, the result of merging the `:body_params` and
-      `:query_params` with `:path_params`
+    * `params` - the request params, the result of merging the `:path_params` on top of
+       `:body_params` on top of `:query_params`
     * `req_cookies` - the request cookies (without the response ones)
 
   ## Response fields
@@ -51,18 +51,13 @@ defmodule Plug.Conn do
   These fields contain response information:
 
     * `resp_body` - the response body, by default is an empty string. It is set
-      to nil after the response is sent, except for test connections.
-    * `resp_charset` - the response charset, defaults to "utf-8"
+      to nil after the response is sent, except for test connections. The response
+      charset used defaults to "utf-8".
     * `resp_cookies` - the response cookies with their name and options
     * `resp_headers` - the response headers as a list of tuples, by default `cache-control`
       is set to `"max-age=0, private, must-revalidate"`. Note, response headers
       are expected to have lowercase keys.
     * `status` - the response status
-
-  Furthermore, the `before_send` field stores callbacks that are invoked
-  before the connection is sent. Callbacks are invoked in the reverse order
-  they are registered (callbacks registered first are invoked last) in order
-  to reproduce a pipeline ordering.
 
   ## Connection fields
 
@@ -123,21 +118,22 @@ defmodule Plug.Conn do
   """
 
   @type adapter :: {module, term}
-  @type assigns :: %{atom => any}
-  @type before_send :: [(t -> t)]
+  @type assigns :: %{optional(atom) => any}
   @type body :: iodata
-  @type cookies :: %{binary => binary}
+  @type req_cookies :: %{optional(binary) => binary}
+  @type cookies :: %{optional(binary) => term}
   @type halted :: boolean
   @type headers :: [{binary, binary}]
   @type host :: binary
   @type int_status :: non_neg_integer | nil
   @type owner :: pid
   @type method :: binary
-  @type param :: binary | %{binary => param} | [param]
-  @type params :: %{binary => param}
+  @type query_param :: binary | %{optional(binary) => query_param} | [query_param]
+  @type query_params :: %{optional(binary) => query_param}
+  @type params :: %{optional(binary) => term}
   @type port_number :: :inet.port_number()
   @type query_string :: String.t()
-  @type resp_cookies :: %{binary => %{}}
+  @type resp_cookies :: %{optional(binary) => map()}
   @type scheme :: :http | :https
   @type secret_key_base :: binary | nil
   @type segments :: [binary]
@@ -147,21 +143,21 @@ defmodule Plug.Conn do
   @type t :: %__MODULE__{
           adapter: adapter,
           assigns: assigns,
-          before_send: before_send,
           body_params: params | Unfetched.t(),
           cookies: cookies | Unfetched.t(),
+          halted: halted,
           host: host,
           method: method,
           owner: owner,
           params: params | Unfetched.t(),
           path_info: segments,
-          path_params: params,
+          path_params: query_params,
           port: :inet.port_number(),
           private: assigns,
-          query_params: params | Unfetched.t(),
+          query_params: query_params | Unfetched.t(),
           query_string: query_string,
           remote_ip: :inet.ip_address(),
-          req_cookies: cookies | Unfetched.t(),
+          req_cookies: req_cookies | Unfetched.t(),
           req_headers: headers,
           request_path: binary,
           resp_body: body | nil,
@@ -176,7 +172,6 @@ defmodule Plug.Conn do
 
   defstruct adapter: {Plug.MissingAdapter, nil},
             assigns: %{},
-            before_send: [],
             body_params: %Unfetched{aspect: :body_params},
             cookies: %Unfetched{aspect: :cookies},
             halted: false,
@@ -184,8 +179,8 @@ defmodule Plug.Conn do
             method: "GET",
             owner: nil,
             params: %Unfetched{aspect: :params},
-            path_params: %{},
             path_info: [],
+            path_params: %{},
             port: 0,
             private: %{},
             query_params: %Unfetched{aspect: :query_params},
@@ -250,6 +245,7 @@ defmodule Plug.Conn do
   end
 
   alias Plug.Conn
+  @epoch {{1970, 1, 1}, {0, 0, 0}}
   @already_sent {:plug_conn, :sent}
   @unsent [:unset, :set, :set_chunked, :set_file]
 
@@ -433,7 +429,7 @@ defmodule Plug.Conn do
   def send_file(conn, status, file, offset \\ 0, length \\ :all)
 
   def send_file(%Conn{state: state}, status, _file, _offset, _length)
-      when not (state in @unsent) do
+      when state not in @unsent do
     _ = Plug.Conn.Status.code(status)
     raise AlreadySentError
   end
@@ -475,7 +471,7 @@ defmodule Plug.Conn do
   """
   @spec send_chunked(t, status) :: t | no_return
   def send_chunked(%Conn{state: state}, status)
-      when not (state in @unsent) do
+      when state not in @unsent do
     _ = Plug.Conn.Status.code(status)
     raise AlreadySentError
   end
@@ -574,7 +570,7 @@ defmodule Plug.Conn do
   """
   @spec resp(t, status, body) :: t
   def resp(%Conn{state: state}, status, _body)
-      when not (state in @unsent) do
+      when state not in @unsent do
     _ = Plug.Conn.Status.code(status)
     raise AlreadySentError
   end
@@ -628,7 +624,8 @@ defmodule Plug.Conn do
   Adds a new request header (`key`) if not present, otherwise replaces the
   previous value of that header with `value`.
 
-  It is recommended for header keys to be in lowercase, to avoid sending
+  Because header keys are case-insensitive in both HTTP/1.1 and HTTP/2,
+  it is recommended for header keys to be in lowercase, to avoid sending
   duplicate keys in a request.
   Additionally, requests with mixed-case headers served over HTTP/2 are not
   considered valid by common clients, resulting in dropped requests.
@@ -740,7 +737,8 @@ defmodule Plug.Conn do
   Adds a new response header (`key`) if not present, otherwise replaces the
   previous value of that header with `value`.
 
-  It is recommended for header keys to be in lowercase, to avoid sending
+  Because header keys are case-insensitive in both HTTP/1.1 and HTTP/2,
+  it is recommended for header keys to be in lowercase, to avoid sending
   duplicate keys in a request.
   Additionally, responses with mixed-case headers served over HTTP/2 are not
   considered valid by common clients, resulting in dropped responses.
@@ -822,6 +820,13 @@ defmodule Plug.Conn do
 
   @doc """
   Merges a series of response headers into the connection.
+
+  It is recommended for header keys to be in lowercase, to avoid sending
+  duplicate keys in a request.
+  Additionally, responses with mixed-case headers served over HTTP/2 are not
+  considered valid by common clients, resulting in dropped responses.
+  As a convenience, when using the `Plug.Adapters.Conn.Test` adapter, any
+  headers that aren't lowercase will raise a `Plug.Conn.InvalidHeaderError`.
 
   ## Example
 
@@ -956,6 +961,11 @@ defmodule Plug.Conn do
   ## Options
 
     * `:length` - the maximum query string length. Defaults to `1_000_000` bytes.
+      Keep in mind the webserver you are using may have a more strict limit. For
+      example, for the Cowboy webserver, [please read](https://hexdocs.pm/plug_cowboy/Plug.Cowboy.html#module-safety-limits).
+
+    * `:validate_utf8` - boolean that tells whether or not to validate the keys and
+      values of the decoded query string are UTF-8 encoded. Defaults to `true`.
 
   """
   @spec fetch_query_params(t, Keyword.t()) :: t
@@ -963,15 +973,22 @@ defmodule Plug.Conn do
 
   def fetch_query_params(%Conn{query_params: %Unfetched{}} = conn, opts) do
     %{params: params, query_string: query_string} = conn
-    Plug.Conn.Utils.validate_utf8!(query_string, InvalidQueryError, "query string")
     length = Keyword.get(opts, :length, 1_000_000)
 
     if byte_size(query_string) > length do
       raise InvalidQueryError,
-            "maximum query string length is #{length}, got a query with #{byte_size(query_string)} bytes"
+        message:
+          "maximum query string length is #{length}, got a query with #{byte_size(query_string)} bytes",
+        plug_status: 414
     end
 
-    query_params = Plug.Conn.Query.decode(query_string)
+    query_params =
+      Plug.Conn.Query.decode(
+        query_string,
+        %{},
+        Plug.Conn.InvalidQueryError,
+        Keyword.get(opts, :validate_utf8, true)
+      )
 
     case params do
       %Unfetched{} -> %{conn | query_params: query_params, params: query_params}
@@ -1235,7 +1252,7 @@ defmodule Plug.Conn do
   end
 
   defp adapter_inform(%Conn{state: state}, _status, _headers)
-       when not (state in @unsent) do
+       when state not in @unsent do
     raise AlreadySentError
   end
 
@@ -1279,7 +1296,7 @@ defmodule Plug.Conn do
   end
 
   defp adapter_push(%Conn{state: state}, _path, _headers)
-       when not (state in @unsent) do
+       when state not in @unsent do
     raise AlreadySentError
   end
 
@@ -1295,11 +1312,21 @@ defmodule Plug.Conn do
 
   @doc """
   Fetches cookies from the request headers.
+
+  ## Options
+
+    * `:signed` - a list of one or more cookies that are signed and must
+      be verified accordingly
+
+    * `:encrypted` - a list of one or more cookies that are encrypted and
+      must be decrypted accordingly
+
+  See `put_resp_cookie/4` for more information.
   """
   @spec fetch_cookies(t, Keyword.t()) :: t
   def fetch_cookies(conn, opts \\ [])
 
-  def fetch_cookies(%Conn{req_cookies: %Unfetched{}} = conn, _opts) do
+  def fetch_cookies(%Conn{req_cookies: %Unfetched{}} = conn, opts) do
     %{resp_cookies: resp_cookies, req_headers: req_headers} = conn
 
     req_cookies =
@@ -1317,49 +1344,154 @@ defmodule Plug.Conn do
         end
       end)
 
-    %{conn | req_cookies: req_cookies, cookies: cookies}
+    fetch_cookies(%{conn | req_cookies: req_cookies, cookies: cookies}, opts)
   end
 
-  def fetch_cookies(%Conn{} = conn, _opts) do
+  def fetch_cookies(%Conn{} = conn, []) do
     conn
+  end
+
+  def fetch_cookies(%Conn{} = conn, opts) do
+    %{req_cookies: req_cookies, cookies: cookies, secret_key_base: secret_key_base} = conn
+
+    cookies =
+      verify_or_decrypt(
+        opts[:signed],
+        req_cookies,
+        cookies,
+        &Plug.Crypto.verify(secret_key_base, &1 <> "_cookie", &2, keys: Plug.Keys)
+      )
+
+    cookies =
+      verify_or_decrypt(
+        opts[:encrypted],
+        req_cookies,
+        cookies,
+        &Plug.Crypto.decrypt(secret_key_base, &1 <> "_cookie", &2, keys: Plug.Keys)
+      )
+
+    %{conn | cookies: cookies}
+  end
+
+  defp verify_or_decrypt(names, req_cookies, cookies, fun) do
+    names
+    |> List.wrap()
+    |> Enum.reduce(cookies, fn name, acc ->
+      if value = req_cookies[name] do
+        case fun.(name, value) do
+          {:ok, verified_value} -> Map.put(acc, name, verified_value)
+          {_, _} -> Map.delete(acc, name)
+        end
+      else
+        acc
+      end
+    end)
   end
 
   @doc """
   Puts a response cookie in the connection.
 
-  The cookie value is not automatically escaped. Therefore, if you
-  want to store values with comma, quotes, and so on, you need to explicitly
-  escape them or use a function such as `Base.encode64(value, padding: false)`
-  when writing and `Base.decode64(encoded, padding: false)` when reading
-  the cookie. Padding needs to be disabled since `=` is not a valid character
-  in cookie values.
+  If the `:sign` or `:encrypt` flag are given, then the cookie
+  value can be any term.
+
+  If the cookie is not signed nor encrypted, then the value must be a binary.
+  Note the value is not automatically escaped. Therefore if you want to store
+  values with non-alphanumeric characters, you must either sign or encrypt
+  the cookie or consider explicitly escaping the cookie value by using a
+  function such as `Base.encode64(value, padding: false)` when writing and
+  `Base.decode64(encoded, padding: false)` when reading the cookie.
+  It is important for padding to be disabled since `=` is not a valid
+  character in cookie values.
+
+  ## Signing and encrypting cookies
+
+  This function allows you to automatically sign and encrypt cookies.
+  When signing or encryption is enabled, then any Elixir value can be
+  stored in the cookie (except anonymous functions for security reasons).
+  Once a value is signed or encrypted, you must also call `fetch_cookies/2`
+  with the name of the cookies that are either signed or encrypted.
+
+  To sign, you would do:
+
+      put_resp_cookie(conn, "my-cookie", %{user_id: user.id}, sign: true)
+
+  and then:
+
+      fetch_cookies(conn, signed: ~w(my-cookie))
+
+  To encrypt, you would do:
+
+      put_resp_cookie(conn, "my-cookie", %{user_id: user.id}, encrypt: true)
+
+  and then:
+
+      fetch_cookies(conn, encrypted: ~w(my-cookie))
+
+  By default a signed or encrypted cookie is only valid for a day, unless
+  a `:max_age` is specified.
+
+  The signing and encryption keys are derived from the connection's
+  `secret_key_base` using a salt that is built by appending "_cookie" to
+  the cookie name. Care should be taken not to derive other keys using
+  this value as the salt. Similarly do not use the same cookie name to
+  store different values with distinct purposes.
 
   ## Options
 
     * `:domain` - the domain the cookie applies to
     * `:max_age` - the cookie max-age, in seconds. Providing a value for this
-      option will set both the _max-age_ and _expires_ cookie attributes
+      option will set both the _max-age_ and _expires_ cookie attributes.
     * `:path` - the path the cookie applies to
     * `:http_only` - when `false`, the cookie is accessible beyond HTTP
     * `:secure` - if the cookie must be sent only over https. Defaults
       to true when the connection is HTTPS
     * `:extra` - string to append to cookie. Use this to take advantage of
       non-standard cookie attributes.
+    * `:sign` - when true, signs the cookie
+    * `:encrypt` - when true, encrypts the cookie
+    * `:same_site` - set the cookie SameSite attribute to a string value.
+      If no string value is set, the attribute is omitted.
 
   """
-  @spec put_resp_cookie(t, binary, binary, Keyword.t()) :: t
+  @spec put_resp_cookie(t, binary, any(), Keyword.t()) :: t
   def put_resp_cookie(%Conn{} = conn, key, value, opts \\ [])
-      when is_binary(key) and is_binary(value) and is_list(opts) do
+      when is_binary(key) and is_list(opts) do
     %{resp_cookies: resp_cookies, scheme: scheme} = conn
-    cookie = [{:value, value} | opts] |> :maps.from_list() |> maybe_secure_cookie(scheme)
+    {to_send_value, opts} = maybe_sign_or_encrypt_cookie(conn, key, value, opts)
+    cookie = [{:value, to_send_value} | opts] |> Map.new() |> maybe_secure_cookie(scheme)
     resp_cookies = Map.put(resp_cookies, key, cookie)
     update_cookies(%{conn | resp_cookies: resp_cookies}, &Map.put(&1, key, value))
   end
 
+  defp maybe_sign_or_encrypt_cookie(conn, key, value, opts) do
+    {sign?, opts} = Keyword.pop(opts, :sign, false)
+    {encrypt?, opts} = Keyword.pop(opts, :encrypt, false)
+
+    case {sign?, encrypt?} do
+      {true, true} ->
+        raise ArgumentError,
+              ":encrypt automatically implies :sign. Please pass only one or the other"
+
+      {true, false} ->
+        {Plug.Crypto.sign(conn.secret_key_base, key <> "_cookie", value, max_age(opts)), opts}
+
+      {false, true} ->
+        {Plug.Crypto.encrypt(conn.secret_key_base, key <> "_cookie", value, max_age(opts)), opts}
+
+      {false, false} when is_binary(value) ->
+        {value, opts}
+
+      {false, false} ->
+        raise ArgumentError, "cookie value must be a binary unless the cookie is signed/encrypted"
+    end
+  end
+
+  defp max_age(opts) do
+    [keys: Plug.Keys, max_age: Keyword.get(opts, :max_age, 86400)]
+  end
+
   defp maybe_secure_cookie(cookie, :https), do: Map.put_new(cookie, :secure, true)
   defp maybe_secure_cookie(cookie, _), do: cookie
-
-  @epoch {{1970, 1, 1}, {0, 0, 0}}
 
   @doc """
   Deletes a response cookie.
@@ -1368,10 +1500,12 @@ defmodule Plug.Conn do
   Check `put_resp_cookie/4` for more information.
   """
   @spec delete_resp_cookie(t, binary, Keyword.t()) :: t
-  def delete_resp_cookie(%Conn{resp_cookies: resp_cookies} = conn, key, opts \\ [])
+  def delete_resp_cookie(%Conn{} = conn, key, opts \\ [])
       when is_binary(key) and is_list(opts) do
-    opts = [universal_time: @epoch, max_age: 0] ++ opts
-    resp_cookies = Map.put(resp_cookies, key, :maps.from_list(opts))
+    %{resp_cookies: resp_cookies, scheme: scheme} = conn
+    opts = opts ++ [universal_time: @epoch, max_age: 0]
+    cookie = opts |> Map.new() |> maybe_secure_cookie(scheme)
+    resp_cookies = Map.put(resp_cookies, key, cookie)
     update_cookies(%{conn | resp_cookies: resp_cookies}, &Map.delete(&1, key))
   end
 
@@ -1397,7 +1531,7 @@ defmodule Plug.Conn do
   on unsent `conn`s. Will raise otherwise.
   """
   @spec put_session(t, String.t() | atom, any) :: t
-  def put_session(%Conn{state: state}, _key, _value) when not (state in @unsent),
+  def put_session(%Conn{state: state}, _key, _value) when state not in @unsent,
     do: raise(AlreadySentError)
 
   def put_session(conn, key, value) when is_atom(key) or is_binary(key) do
@@ -1419,9 +1553,13 @@ defmodule Plug.Conn do
   @doc """
   Returns the whole session.
 
+  Although `get_session/2` and `put_session/3` allow atom keys,
+  they are always normalized to strings. So this function always
+  returns a map with string keys.
+
   Raises if the session was not yet fetched.
   """
-  @spec get_session(t) :: %{(String.t() | atom) => any}
+  @spec get_session(t) :: %{optional(String.t()) => any}
   def get_session(%Conn{private: private}) do
     if session = Map.get(private, :plug_session) do
       session
@@ -1437,7 +1575,7 @@ defmodule Plug.Conn do
   automatically converted to strings.
   """
   @spec delete_session(t, String.t() | atom) :: t
-  def delete_session(%Conn{state: state}, _key) when not (state in @unsent),
+  def delete_session(%Conn{state: state}, _key) when state not in @unsent,
     do: raise(AlreadySentError)
 
   def delete_session(conn, key) when is_atom(key) or is_binary(key) do
@@ -1463,16 +1601,20 @@ defmodule Plug.Conn do
 
   ## Options
 
-    * `:renew` - generates a new session id for the cookie
-    * `:drop` - drops the session, a session cookie will not be included in the
+    * `:renew` - When `true`, generates a new session id for the cookie
+    * `:drop` - When `true`, drops the session, a session cookie will not be included in the
       response
-    * `:ignore` - ignores all changes made to the session in this request cycle
+    * `:ignore` - When `true`, ignores all changes made to the session in this request cycle
+
+  ## Examples
+
+      configure_session(conn, renew: true)
 
   """
   @spec configure_session(t, Keyword.t()) :: t
   def configure_session(conn, opts)
 
-  def configure_session(%Conn{state: state}, _opts) when not (state in @unsent),
+  def configure_session(%Conn{state: state}, _opts) when state not in @unsent,
     do: raise(AlreadySentError)
 
   def configure_session(conn, opts) do
@@ -1495,7 +1637,7 @@ defmodule Plug.Conn do
 
   ## Examples
 
-  To log the status of requests being sent:
+  To log the status of response being sent:
 
       require Logger
 
@@ -1509,13 +1651,13 @@ defmodule Plug.Conn do
   def register_before_send(conn, callback)
 
   def register_before_send(%Conn{state: state}, _callback)
-      when not (state in @unsent) do
+      when state not in @unsent do
     raise AlreadySentError
   end
 
-  def register_before_send(%Conn{before_send: before_send} = conn, callback)
+  def register_before_send(%Conn{} = conn, callback)
       when is_function(callback, 1) do
-    %{conn | before_send: [callback | before_send]}
+    update_in(conn.private[:before_send], &[callback | &1 || []])
   end
 
   @doc """
@@ -1544,8 +1686,8 @@ defmodule Plug.Conn do
 
   ## Helpers
 
-  defp run_before_send(%Conn{before_send: before_send} = conn, new) do
-    conn = Enum.reduce(before_send, %{conn | state: new}, & &1.(&2))
+  defp run_before_send(%Conn{private: private} = conn, new) do
+    conn = Enum.reduce(private[:before_send] || [], %{conn | state: new}, & &1.(&2))
 
     if conn.state != new do
       raise ArgumentError, "cannot send/change response from run_before_send callback"

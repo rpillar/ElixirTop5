@@ -27,7 +27,7 @@ defmodule Plug.Parsers do
     Raised when the request body contains bad encoding.
     """
 
-    defexception message: nil, plug_status: 415
+    defexception message: nil, plug_status: 400
   end
 
   defmodule ParseError do
@@ -46,22 +46,24 @@ defmodule Plug.Parsers do
   @moduledoc """
   A plug for parsing the request body.
 
-  This module also specifies a behaviour that all the parsers to be used with
-  Plug should adopt.
+  It invokes a list of `:parsers`, which are activated based on the
+  request content-type. Custom parsers are also supported by defining
+  a module that implements the behaviour defined by this module.
 
-  This plug also fetches query params in the connection through
-  `Plug.Conn.fetch_query_params/2`.
-
-  Once a connection goes through this plug, it will have `:body_params` set to
-  the map of params parsed by one of the parsers listed in `:parsers` and
-  `:params` set to the result of merging the `:body_params` and `:query_params`.
+  Once a connection goes through this plug, it will have `:body_params`
+  set to the map of params parsed by one of the parsers listed in
+  `:parsers` and `:params` set to the result of merging the `:body_params`
+  and `:query_params`. In case `:query_params` have not yet been parsed,
+  `Plug.Conn.fetch_query_params/2` is automatically invoked.
 
   This plug will raise `Plug.Parsers.UnsupportedMediaTypeError` by default if
   the request cannot be parsed by any of the given types and the MIME type has
   not been explicitly accepted with the `:pass` option.
 
   `Plug.Parsers.RequestTooLargeError` will be raised if the request goes over
-  the given limit.
+  the given limit. The default length is 8MB and it can be customized by passing
+  the `:length` option to the Plug. `:read_timeout` and `:read_length`, as
+  described by `Plug.Conn.read_body/2`, are also supported.
 
   Parsers may raise a `Plug.Parsers.ParseError` if the request has a malformed
   body.
@@ -92,23 +94,50 @@ defmodule Plug.Parsers do
 
     * `:query_string_length` - the maximum allowed size for query strings
 
+    * `:validate_utf8` - boolean that tells whether or not we want to
+        validate that parsed binaries are utf8 strings.
+
     * `:body_reader` - an optional replacement (or wrapper) for
       `Plug.Conn.read_body/2` to provide a function that gives access to the
       raw body before it is parsed and discarded. It is in the standard format
       of `{Module, :function, [args]}` (MFA) and defaults to
-      `{Plug.Conn, :read_body, []}`.
+      `{Plug.Conn, :read_body, []}`. Note that this option is not used by
+      `Plug.Parsers.MULTIPART` which relies instead on other functions defined
+      in `Plug.Conn`.
+
+  All other options given to this Plug are forwarded to the parsers.
 
   ## Examples
 
-      plug Plug.Parsers, parsers: [:urlencoded, :multipart]
+      plug Plug.Parsers,
+           parsers: [:urlencoded, :multipart],
+           pass: ["text/*"]
 
-      plug Plug.Parsers, parsers: [:urlencoded, :json],
-                         pass: ["text/*"],
-                         json_decoder: Jason
+  Any other option given to Plug.Parsers is forwarded to the underlying
+  parsers. Therefore, you can use a JSON parser and pass the `:json_decoder`
+  option at the root:
 
-  Each parser also accepts options to be given directly to it by using tuples.
-  For example, to support file uploads it is common to pass the `:length`,
-  `:read_length` and `:read_timeout` option to the multipart parser:
+      plug Plug.Parsers,
+           parsers: [:urlencoded, :json],
+           json_decoder: Jason
+
+  Or directly to the parser itself:
+
+      plug Plug.Parsers,
+           parsers: [:urlencoded, {:json, json_decoder: Jason}]
+
+  A common set of shared options given to Plug.Parsers is `:length`,
+  `:read_length` and `:read_timeout`, which customizes the maximum
+  request length you want to accept. For example, to support file
+  uploads, you can do:
+
+      plug Plug.Parsers,
+           parsers: [:url_encoded, :multipart],
+           length: 20_000_000
+
+  However, the above will increase the maximum length of all request
+  types. If you want to increase the limit only for multipart requests
+  (which is typically the ones used for file uploads), you can do:
 
       plug Plug.Parsers,
            parsers: [
@@ -212,16 +241,18 @@ defmodule Plug.Parsers do
   @behaviour Plug
   @methods ~w(POST PUT PATCH DELETE)
 
+  @impl true
   def init(opts) do
     {parsers, opts} = Keyword.pop(opts, :parsers)
     {pass, opts} = Keyword.pop(opts, :pass, [])
     {query_string_length, opts} = Keyword.pop(opts, :query_string_length, 1_000_000)
+    validate_utf8 = Keyword.get(opts, :validate_utf8, true)
 
     unless parsers do
       raise ArgumentError, "Plug.Parsers expects a set of parsers to be given in :parsers"
     end
 
-    {convert_parsers(parsers, opts), pass, query_string_length}
+    {convert_parsers(parsers, opts), pass, query_string_length, validate_utf8}
   end
 
   defp convert_parsers(parsers, root_opts) do
@@ -241,7 +272,9 @@ defmodule Plug.Parsers do
           reference -> Module.concat(Plug.Parsers, String.upcase(reference))
         end
 
-      if Code.ensure_compiled?(module) and function_exported?(module, :init, 1) do
+      # TODO: Remove this check in future releases once all parsers implement init/1 accordingly
+      if Code.ensure_compiled(module) == {:module, module} and
+           function_exported?(module, :init, 1) do
         {module, module.init(opts)}
       else
         {module, opts}
@@ -249,63 +282,103 @@ defmodule Plug.Parsers do
     end
   end
 
+  @impl true
   def call(%{method: method, body_params: %Plug.Conn.Unfetched{}} = conn, options)
       when method in @methods do
-    {parsers, pass, query_string_length} = options
+    {parsers, pass, query_string_length, validate_utf8} = options
     %{req_headers: req_headers} = conn
-    conn = Conn.fetch_query_params(conn, length: query_string_length)
 
-    with {"content-type", ct} <- List.keyfind(req_headers, "content-type", 0),
-         {:ok, type, subtype, params} <- Conn.Utils.content_type(ct) do
-      reduce(conn, parsers, type, subtype, params, pass, query_string_length)
-    else
-      _ -> merge_params(conn, %{}, query_string_length)
+    conn =
+      Conn.fetch_query_params(conn,
+        length: query_string_length,
+        validate_utf8: validate_utf8
+      )
+
+    case List.keyfind(req_headers, "content-type", 0) do
+      {"content-type", ct} ->
+        case Conn.Utils.content_type(ct) do
+          {:ok, type, subtype, params} ->
+            reduce(
+              conn,
+              parsers,
+              type,
+              subtype,
+              params,
+              pass,
+              query_string_length,
+              validate_utf8
+            )
+
+          :error ->
+            reduce(conn, parsers, ct, "", %{}, pass, query_string_length, validate_utf8)
+        end
+
+      _ ->
+        {conn, params} = merge_params(conn, %{}, query_string_length, validate_utf8)
+
+        %{conn | params: params, body_params: %{}}
     end
   end
 
-  def call(%{body_params: body_params} = conn, {_, _, query_string_length}) do
-    merge_params(conn, make_empty_if_unfetched(body_params), query_string_length)
+  def call(%{body_params: body_params} = conn, {_, _, query_string_length, validate_utf8}) do
+    body_params = make_empty_if_unfetched(body_params)
+    {conn, params} = merge_params(conn, body_params, query_string_length, validate_utf8)
+    %{conn | params: params, body_params: body_params}
   end
 
-  defp reduce(conn, [{parser, options} | rest], type, subtype, params, pass, query_string_length) do
+  defp reduce(
+         conn,
+         [{parser, options} | rest],
+         type,
+         subtype,
+         params,
+         pass,
+         query_string_length,
+         validate_utf8
+       ) do
     case parser.parse(conn, type, subtype, params, options) do
       {:ok, body, conn} ->
-        merge_params(conn, body, query_string_length)
+        {conn, params} = merge_params(conn, body, query_string_length, validate_utf8)
+        %{conn | params: params, body_params: body}
 
       {:next, conn} ->
-        reduce(conn, rest, type, subtype, params, pass, query_string_length)
+        reduce(conn, rest, type, subtype, params, pass, query_string_length, validate_utf8)
 
       {:error, :too_large, _conn} ->
         raise RequestTooLargeError
     end
   end
 
-  defp reduce(conn, [], type, subtype, _params, pass, _query_string_length) do
-    ensure_accepted_mimes(conn, type, subtype, pass)
-  end
-
-  defp ensure_accepted_mimes(conn, _type, _subtype, ["*/*"]), do: conn
-
-  defp ensure_accepted_mimes(conn, type, subtype, pass) do
-    if "#{type}/#{subtype}" in pass || "#{type}/*" in pass do
-      conn
+  defp reduce(conn, [], type, subtype, _params, pass, query_string_length, validate_utf8) do
+    if accepted_mime?(type, subtype, pass) do
+      {conn, params} = merge_params(conn, %{}, query_string_length, validate_utf8)
+      %{conn | params: params}
     else
       raise UnsupportedMediaTypeError, media_type: "#{type}/#{subtype}"
     end
   end
 
-  defp merge_params(conn, body_params, query_string_length) do
+  defp accepted_mime?(_type, _subtype, ["*/*"]),
+    do: true
+
+  defp accepted_mime?(type, subtype, pass),
+    do: "#{type}/#{subtype}" in pass || "#{type}/*" in pass
+
+  defp merge_params(conn, body_params, query_string_length, validate_utf8) do
     %{params: params, path_params: path_params} = conn
     params = make_empty_if_unfetched(params)
-    conn = Plug.Conn.fetch_query_params(conn, length: query_string_length)
 
-    params =
-      conn.query_params
-      |> Map.merge(params)
-      |> Map.merge(body_params)
-      |> Map.merge(path_params)
+    conn =
+      Plug.Conn.fetch_query_params(conn,
+        length: query_string_length,
+        validate_utf8: validate_utf8
+      )
 
-    %{conn | params: params, body_params: body_params}
+    {conn,
+     conn.query_params
+     |> Map.merge(params)
+     |> Map.merge(body_params)
+     |> Map.merge(path_params)}
   end
 
   defp make_empty_if_unfetched(%Plug.Conn.Unfetched{}), do: %{}

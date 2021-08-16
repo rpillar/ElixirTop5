@@ -3,7 +3,7 @@ require Logger
 defmodule FileSystem.Backends.FSInotify do
   @moduledoc """
   This file is a fork from https://github.com/synrc/fs.
-  FileSysetm backend for linux, freebsd and openbsd, a GenServer receive data from Port, parse event
+  FileSystem backend for linux, freebsd and openbsd, a GenServer receive data from Port, parse event
   and send it to the worker process.
   Need `inotify-tools` installed to use this backend.
 
@@ -49,13 +49,7 @@ defmodule FileSystem.Backends.FSInotify do
   end
 
   defp executable_path(:config) do
-    with config when is_list(config) <- Application.get_env(:file_system, :fs_mac),
-         executable_file when not is_nil(executable_file) <- Keyword.get(config, :executable_file)
-    do
-      executable_file |> to_string
-    else
-      _ -> nil
-    end
+    Application.get_env(:file_system, :fs_inotify)[:executable_file]
   end
 
   defp executable_path(:system_env) do
@@ -104,16 +98,30 @@ defmodule FileSystem.Backends.FSInotify do
 
   def init(args) do
     {worker_pid, rest} = Keyword.pop(args, :worker_pid)
+
     case parse_options(rest) do
       {:ok, port_args} ->
-        bash_args = ['-c', '#{executable_path()} $0 $@ & PID=$!; read a; kill -KILL $PID']
+        bash_args = ['-c', '#{executable_path()} "$0" "$@" & PID=$!; read a; kill -KILL $PID']
+
+        all_args =
+          case :os.type() do
+            {:unix, :freebsd} ->
+              bash_args ++ ['--'] ++ port_args
+
+            _ ->
+              bash_args ++ port_args
+          end
+
         port = Port.open(
           {:spawn_executable, '/bin/sh'},
-          [:stream, :exit_status, {:line, 16384}, {:args, bash_args ++ port_args}, {:cd, System.tmp_dir!()}]
+          [:stream, :exit_status, {:line, 16384}, {:args, all_args}, {:cd, System.tmp_dir!()}]
         )
+
         Process.link(port)
         Process.flag(:trap_exit, true)
+
         {:ok, %{port: port, worker_pid: worker_pid}}
+
       {:error, _} ->
         :ignore
     end
@@ -149,9 +157,9 @@ defmodule FileSystem.Backends.FSInotify do
   end
 
   defp convert_flag("CREATE"),      do: :created
-  defp convert_flag("MOVED_TO"),    do: :created
+  defp convert_flag("MOVED_TO"),    do: :moved_to
   defp convert_flag("DELETE"),      do: :deleted
-  defp convert_flag("MOVED_FROM"),  do: :deleted
+  defp convert_flag("MOVED_FROM"),  do: :moved_from
   defp convert_flag("ISDIR"),       do: :isdir
   defp convert_flag("MODIFY"),      do: :modified
   defp convert_flag("CLOSE_WRITE"), do: :modified

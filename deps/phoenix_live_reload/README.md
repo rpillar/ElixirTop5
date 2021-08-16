@@ -6,7 +6,7 @@ You can use `phoenix_live_reload` in your projects by adding it to your `mix.exs
 
 ```elixir
 def deps do
-  [{:phoenix_live_reload, "~> 1.2"}]
+  [{:phoenix_live_reload, "~> 1.3"}]
 end
 ```
 
@@ -38,6 +38,24 @@ There is also a `:fs_poll` backend that polls the filesystem and is available on
 config :phoenix_live_reload,
   backend: :fs_poll
 ```
+
+By default the entire application directory is watched by the backend. However, with some environments and backends, this may be inefficient, resulting in slow response times to file modifications. To account for this, it's also possible to explicitly declare a list of directories for the backend to watch, and additional options for the backend:
+
+```elixir
+config :phoenix_live_reload,
+  dirs: [
+    "priv/static",
+    "priv/gettext",
+    "lib/example_web/live",
+    "lib/example_web/views",
+    "lib/example_web/templates",
+  ],
+  backend: :fs_poll,
+  backend_opts: [
+    interval: 500
+  ]
+```
+
 
 ## Skipping remote CSS reload
 

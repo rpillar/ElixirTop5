@@ -2,10 +2,9 @@ defmodule Plug.Conn.Query do
   @moduledoc """
   Conveniences for decoding and encoding url encoded queries.
 
-  Plug allows a developer to build query strings
-  that map to Elixir structures in order to make
-  manipulation of such structures easier on the server
-  side. Here are some examples:
+  Plug allows a developer to build query strings that map to
+  Elixir structures in order to make manipulation of such structures
+  easier on the server side. Here are some examples:
 
       iex> decode("foo=bar")["foo"]
       "bar"
@@ -24,6 +23,12 @@ defmodule Plug.Conn.Query do
 
       iex> decode("foo[]=bar&foo[]=baz")["foo"]
       ["bar", "baz"]
+
+  Keys without values are treated as empty strings,
+  according to https://url.spec.whatwg.org/#application/x-www-form-urlencoded:
+
+      iex> decode("foo")["foo"]
+      ""
 
   Maps can be encoded:
 
@@ -55,50 +60,72 @@ defmodule Plug.Conn.Query do
 
   @doc """
   Decodes the given binary.
-  """
-  def decode(query, initial \\ %{})
 
-  def decode("", initial) do
+  The binary is assumed to be encoded in "x-www-form-urlencoded" format.
+  The format is decoded and then validated for proper UTF-8 encoding.
+  """
+  def decode(
+        query,
+        initial \\ %{},
+        invalid_exception \\ Plug.Conn.InvalidQueryError,
+        validate_utf8 \\ true
+      )
+
+  def decode("", initial, _invalid_exception, _validate_utf8) do
     initial
   end
 
-  def decode(query, initial) do
+  def decode(query, initial, invalid_exception, validate_utf8) do
     parts = :binary.split(query, "&", [:global])
 
-    Enum.reduce(Enum.reverse(parts), initial, &decode_www_pair(&1, &2))
+    Enum.reduce(
+      Enum.reverse(parts),
+      initial,
+      &decode_www_pair(&1, &2, invalid_exception, validate_utf8)
+    )
   end
 
-  defp decode_www_pair("", acc) do
+  defp decode_www_pair("", acc, _invalid_exception, _validate_utf8) do
     acc
   end
 
-  defp decode_www_pair(binary, acc) do
+  defp decode_www_pair(binary, acc, invalid_exception, validate_utf8) do
     current =
       case :binary.split(binary, "=") do
         [key, value] ->
-          {decode_www_form(key), decode_www_form(value)}
+          {decode_www_form(key, invalid_exception, validate_utf8),
+           decode_www_form(value, invalid_exception, validate_utf8)}
 
         [key] ->
-          {decode_www_form(key), nil}
+          {decode_www_form(key, invalid_exception, validate_utf8), ""}
       end
 
     decode_pair(current, acc)
   end
 
-  defp decode_www_form(value) do
+  defp decode_www_form(value, invalid_exception, validate_utf8) do
+    # TODO: Remove rescue as this can't fail from Elixir v1.13
     try do
       URI.decode_www_form(value)
     rescue
       ArgumentError ->
-        raise Plug.Conn.InvalidQueryError,
-          message: "invalid www-form encoding on query-string, got #{value}"
+        raise invalid_exception, "invalid urlencoded params, got #{value}"
+    else
+      binary ->
+        if validate_utf8 do
+          Plug.Conn.Utils.validate_utf8!(binary, invalid_exception, "urlencoded params")
+        end
+
+        binary
     end
   end
 
   @doc """
   Decodes the given tuple and stores it in the accumulator.
+
   It parses the key and stores the value into the current
-  accumulator.
+  accumulator. The keys and values are not assumed to be
+  encoded in "x-www-form-urlencoded".
 
   Parameter lists are added to the accumulator in reverse
   order, so be sure to pass the parameters in reverse order.
@@ -197,7 +224,7 @@ defmodule Plug.Conn.Query do
     mapper = fn
       value when is_map(value) and map_size(value) != 1 ->
         raise ArgumentError,
-              "cannot encode maps inside lists when the map has 0 or more than 1 elements, " <>
+              "cannot encode maps inside lists when the map has 0 or more than 1 element, " <>
                 "got: #{inspect(value)}"
 
       value ->

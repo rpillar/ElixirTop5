@@ -2,6 +2,9 @@ defmodule Ecto.Integration.Migration do
   use Ecto.Migration
 
   def change do
+    # IO.puts "TESTING MIGRATION LOCK"
+    # Process.sleep(10000)
+
     create table(:users, comment: "users table") do
       add :name, :string, comment: "name column"
       add :custom_id, :uuid
@@ -11,7 +14,7 @@ defmodule Ecto.Integration.Migration do
     create table(:posts) do
       add :title, :string, size: 100
       add :counter, :integer
-      add :text, :binary
+      add :blob, :binary
       add :bid, :binary_id
       add :uuid, :uuid
       add :meta, :map
@@ -20,6 +23,7 @@ defmodule Ecto.Integration.Migration do
       add :public, :boolean
       add :cost, :decimal, precision: 2, scale: 1
       add :visits, :integer
+      add :wrapped_visits, :integer
       add :intensity, :float
       add :author_id, :integer
       add :posted, :date
@@ -44,10 +48,12 @@ defmodule Ecto.Integration.Migration do
 
     create table(:permalinks) do
       add :uniform_resource_locator, :string
+      add :title, :string
       add :post_id, references(:posts)
       add :user_id, references(:users)
     end
 
+    create unique_index(:permalinks, [:post_id])
     create unique_index(:permalinks, [:uniform_resource_locator])
 
     create table(:comments) do
@@ -82,12 +88,13 @@ defmodule Ecto.Integration.Migration do
     end
 
     create table(:orders) do
-      add :instructions, :text
       add :item, :map
+      add :items, :map
+      add :meta, :map
       add :permalink_id, references(:permalinks)
     end
 
-    unless :array_type in ExUnit.configuration[:exclude] do
+    unless :array_type in ExUnit.configuration()[:exclude] do
       create table(:tags) do
         add :ints,  {:array, :integer}
         add :uuids, {:array, :uuid}, default: []
@@ -116,6 +123,10 @@ defmodule Ecto.Integration.Migration do
     create table(:usecs) do
       add :naive_datetime_usec, :naive_datetime_usec
       add :utc_datetime_usec, :utc_datetime_usec
+    end
+
+    create table(:bits) do
+      add :bit, :bit
     end
   end
 end

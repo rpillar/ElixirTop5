@@ -6,25 +6,32 @@ defmodule Plug.Crypto.MessageVerifier do
   For example, the cookie store uses this verifier to send data
   to the client. The data can be read by the client, but cannot be
   tampered with.
+
+  The message and its verification are base64url encoded and returned
+  to you.
+
+  The current algorithm used is HMAC-SHA, with SHA256, SHA384, and
+  SHA512 as supported digest types.
   """
 
   @doc """
   Signs a message according to the given secret.
   """
   def sign(message, secret, digest_type \\ :sha256)
-      when is_binary(message) and is_binary(secret) and digest_type in [:sha256, :sha384, :sha512] do
+      when is_binary(message) and byte_size(secret) > 0 and
+             digest_type in [:sha256, :sha384, :sha512] do
     hmac_sha2_sign(message, secret, digest_type)
   rescue
-    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(System.stacktrace())
+    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(__STACKTRACE__)
   end
 
   @doc """
   Decodes and verifies the encoded binary was not tampered with.
   """
-  def verify(signed, secret) when is_binary(signed) and is_binary(secret) do
+  def verify(signed, secret) when is_binary(signed) and byte_size(secret) > 0 do
     hmac_sha2_verify(signed, secret)
   rescue
-    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(System.stacktrace())
+    e -> reraise e, Plug.Crypto.prune_args_from_stacktrace(__STACKTRACE__)
   end
 
   ## Signature Algorithms
@@ -40,7 +47,7 @@ defmodule Plug.Crypto.MessageVerifier do
   defp hmac_sha2_sign(payload, key, digest_type) do
     protected = hmac_sha2_to_protected(digest_type)
     plain_text = signing_input(protected, payload)
-    signature = :crypto.hmac(digest_type, key, plain_text)
+    signature = hmac(digest_type, key, plain_text)
     encode_token(plain_text, signature)
   end
 
@@ -48,7 +55,7 @@ defmodule Plug.Crypto.MessageVerifier do
     case decode_token(signed) do
       {protected, payload, plain_text, signature} when protected in ["HS256", "HS384", "HS512"] ->
         digest_type = hmac_sha2_to_digest_type(protected)
-        challenge = :crypto.hmac(digest_type, key, plain_text)
+        challenge = hmac(digest_type, key, plain_text)
 
         if Plug.Crypto.secure_compare(challenge, signature) do
           {:ok, payload}
@@ -85,5 +92,12 @@ defmodule Plug.Crypto.MessageVerifier do
     |> Base.url_encode64(padding: false)
     |> Kernel.<>(".")
     |> Kernel.<>(Base.url_encode64(payload, padding: false))
+  end
+
+  # TODO: remove when we require OTP 22.1
+  if Code.ensure_loaded?(:crypto) and function_exported?(:crypto, :mac, 4) do
+    defp hmac(digest, key, data), do: :crypto.mac(:hmac, digest, key, data)
+  else
+    defp hmac(digest, key, data), do: :crypto.hmac(digest, key, data)
   end
 end

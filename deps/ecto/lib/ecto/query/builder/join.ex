@@ -42,7 +42,7 @@ defmodule Ecto.Query.Builder.Join do
       {:x, {:{}, [], [:fragment, [], [raw: "foo"]]}, nil, []}
 
   """
-  @spec escape(Macro.t, Keyword.t, Macro.Env.t) :: {[atom], Macro.t | nil, Macro.t | nil, list}
+  @spec escape(Macro.t, Keyword.t, Macro.Env.t) :: {atom, Macro.t | nil, Macro.t | nil, list}
   def escape({:in, _, [{var, _, context}, expr]}, vars, env)
       when is_atom(var) and is_atom(context) do
     {_, expr, assoc, params} = escape(expr, vars, env)
@@ -120,9 +120,10 @@ defmodule Ecto.Query.Builder.Join do
   If possible, it does all calculations at compile time to avoid
   runtime work.
   """
-  @spec build(Macro.t, atom, [Macro.t], Macro.t, Macro.t, Macro.t, atom, String.t | nil, nil | String.t | [String.t], Macro.Env.t) ::
+  @spec build(Macro.t, atom, [Macro.t], Macro.t, Macro.t, Macro.t, atom, nil | {:ok, String.t | nil}, nil | String.t | [String.t], Macro.Env.t) ::
               {Macro.t, Keyword.t, non_neg_integer | nil}
   def build(query, qual, binding, expr, count_bind, on, as, prefix, maybe_hints, env) do
+    {:ok, prefix} = prefix || {:ok, nil}
     hints = List.wrap(maybe_hints)
 
     unless Enum.all?(hints, &is_binary/1) do
@@ -144,21 +145,11 @@ defmodule Ecto.Query.Builder.Join do
     {join_bind, join_source, join_assoc, join_params} = escape(expr, binding, env)
     join_params = Builder.escape_params(join_params)
 
-    prefix =
-      case join_source do
-        {_, schema} when prefix == nil and schema != nil ->
-          quote(do: unquote(schema).__schema__(:prefix))
-        _ ->
-          prefix
-      end
-
     join_qual = validate_qual(qual)
     validate_bind(join_bind, binding)
 
     {count_bind, query} =
-      if (join_bind != :_ or as != nil) and !count_bind do
-        # If we have a join or alias and count_bind is not available,
-        # we need to compute the amount of binds at runtime
+      if is_nil(count_bind) do
         query =
           quote do
             query = Ecto.Queryable.to_query(unquote(query))
@@ -212,23 +203,28 @@ defmodule Ecto.Query.Builder.Join do
   end
 
   def build_on(on, join, as, query, binding, count_bind, env) do
-    {on_expr, on_params} = Ecto.Query.Builder.Filter.escape(:on, on, count_bind, binding, env)
-    on_params = Builder.escape_params(on_params)
+    case Ecto.Query.Builder.Filter.escape(:on, on, count_bind, binding, env) do
+      {on_expr, {on_params, []}}  ->
+        on_params = Builder.escape_params(on_params)
 
-    join =
-      quote do
-        %JoinExpr{
-          unquote_splicing(join),
-          on: %QueryExpr{
-            expr: unquote(on_expr),
-            params: unquote(on_params),
-            line: unquote(env.line),
-            file: unquote(env.file)
-          }
-        }
-      end
+        join =
+          quote do
+            %JoinExpr{
+              unquote_splicing(join),
+              on: %QueryExpr{
+                expr: unquote(on_expr),
+                params: unquote(on_params),
+                line: unquote(env.line),
+                file: unquote(env.file)
+              }
+            }
+          end
 
-    Builder.apply_query(query, __MODULE__, [join, as, count_bind], env)
+        Builder.apply_query(query, __MODULE__, [join, as, count_bind], env)
+
+      _pattern ->
+        raise ArgumentError, "invalid expression for join `:on`, subqueries aren't supported"
+    end
   end
 
   @doc """
@@ -314,7 +310,7 @@ defmodule Ecto.Query.Builder.Join do
   end
 
   defp ensure_field!({var, _, _}) when var != :^ do
-    Builder.error! "you passed the variable `#{var}` to `assoc/2`. Did you mean to pass the atom `:#{var}?`"
+    Builder.error! "you passed the variable `#{var}` to `assoc/2`. Did you mean to pass the atom `:#{var}`?"
   end
   defp ensure_field!(_), do: true
 end

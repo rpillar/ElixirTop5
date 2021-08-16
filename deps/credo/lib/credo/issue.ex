@@ -3,7 +3,7 @@ defmodule Credo.Issue do
   `Issue` structs represent all issues found during the code analysis.
   """
 
-  @type t :: module
+  @type t :: %__MODULE__{}
 
   defstruct check: nil,
             category: nil,
@@ -16,6 +16,8 @@ defmodule Credo.Issue do
             exit_status: 0,
             # optional: the String that triggered the check to fail
             trigger: nil,
+            # optional: wether the issue is old, new or fixed
+            diff_marker: nil,
             # optional: metadata filled in by the check
             meta: [],
             # optional: the name of the module, macro or

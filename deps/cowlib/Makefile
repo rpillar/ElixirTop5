@@ -2,7 +2,7 @@
 
 PROJECT = cowlib
 PROJECT_DESCRIPTION = Support library for manipulating Web protocols.
-PROJECT_VERSION = 2.7.3
+PROJECT_VERSION = 2.11.0
 
 # Options.
 
@@ -18,18 +18,38 @@ DIALYZER_OPTS = -Werror_handling -Wunmatched_returns
 
 LOCAL_DEPS = crypto
 
-TEST_DEPS = $(if $(CI_ERLANG_MK),ci.erlang.mk) horse proper
+DOC_DEPS = asciideck
+
+TEST_DEPS = $(if $(CI_ERLANG_MK),ci.erlang.mk) base32 horse proper jsx \
+	structured-header-tests uritemplate-tests
+dep_base32 = git https://github.com/dnsimple/base32_erlang main
 dep_horse = git https://github.com/ninenines/horse.git master
+dep_jsx = git https://github.com/talentdeficit/jsx v2.10.0
+dep_structured-header-tests = git https://github.com/httpwg/structured-header-tests e614583397e7f65e0082c0fff3929f32a298b9f2
+dep_uritemplate-tests = git https://github.com/uri-templates/uritemplate-test master
 
 # CI configuration.
 
 dep_ci.erlang.mk = git https://github.com/ninenines/ci.erlang.mk master
 DEP_EARLY_PLUGINS = ci.erlang.mk
 
-AUTO_CI_OTP ?= OTP-19+
+AUTO_CI_OTP ?= OTP-21+
 AUTO_CI_HIPE ?= OTP-LATEST
 # AUTO_CI_ERLLVM ?= OTP-LATEST
-AUTO_CI_WINDOWS ?= OTP-19+
+AUTO_CI_WINDOWS ?= OTP-21+
+
+# Hex configuration.
+
+define HEX_TARBALL_EXTRA_METADATA
+#{
+	licenses => [<<"ISC">>],
+	links => #{
+		<<"Function reference">> => <<"https://ninenines.eu/docs/en/cowlib/2.11/manual/">>,
+		<<"GitHub">> => <<"https://github.com/ninenines/cowlib">>,
+		<<"Sponsor">> => <<"https://github.com/sponsors/essen">>
+	}
+}
+endef
 
 # Standard targets.
 
@@ -78,9 +98,11 @@ perfs: test-build
 # Prepare for the release.
 
 prepare_tag:
+	$(verbose) $(warning Hex metadata: $(HEX_TARBALL_EXTRA_METADATA))
+	$(verbose) echo
 	$(verbose) echo -n "Most recent tag:            "
-	$(verbose) git tag | tail -n1
-	$(verbose) git verify-tag `git tag | tail -n1`
+	$(verbose) git tag --sort taggerdate | tail -n1
+	$(verbose) git verify-tag `git tag --sort taggerdate | tail -n1`
 	$(verbose) echo -n "MAKEFILE: "
 	$(verbose) grep -m1 PROJECT_VERSION Makefile
 	$(verbose) echo -n "APP:                 "
